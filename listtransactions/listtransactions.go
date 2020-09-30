@@ -98,19 +98,6 @@ func readVins(buf *bytes.Reader) (vins []*wire.TxIn, txVinsLen uint64, err error
 		txScriptSigB := make([]byte, txScriptLen)
 		_, _ = io.ReadFull(buf, txScriptSigB) // non-fatal
 
-		// Not working below
-		//txScriptLenB := make([]byte, 4)
-		//if _, err = io.ReadFull(buf, txScriptLenB); err != nil {
-		//	log.Println("failed to read tx vin scriptsig length", err.Error())
-		//	return
-		//}
-		//txScriptLen := binary.LittleEndian.Uint32(txScriptLenB)
-		//txScriptSigB := make([]byte, txScriptLen)
-		//if _, err = io.ReadFull(buf, txScriptSigB); err != nil {
-		//	log.Println("failed to read tx vin scriptsig bytes", err.Error())
-		//	return
-		//}
-
 		// Tx sequence
 		txSequenceB := make([]byte, 4)
 		if _, err = io.ReadFull(buf, txSequenceB); err != nil {
