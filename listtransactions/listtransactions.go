@@ -41,6 +41,10 @@ func (tx *Tx) Key() string {
 	return fmt.Sprintf("%v%v_%s", tx.Txid, tx.Vout, tx.Category)
 }
 
+func (tx *Tx) KeyCategory(txid string, vout int32, category string) string {
+	return fmt.Sprintf("%v%v_%s", txid, vout, category)
+}
+
 type BlockTx struct {
 	Block       BlockInterface
 	Transaction *wire.MsgTx

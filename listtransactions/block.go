@@ -199,7 +199,9 @@ func (bp *BLOCKPlugin) LoadBlocks(blocksDir string) (err error) {
 					}
 				}
 			}
+
 			// Receive category
+			var cacheReceiveTxs []*Tx
 			for i, vout := range tx.TxOut {
 				scriptPk := vout.PkScript
 				var addrs []btcutil.Address
@@ -225,8 +227,19 @@ func (bp *BLOCKPlugin) LoadBlocks(blocksDir string) (err error) {
 							Blockhash:     bloc.Hash(),
 							OutP:          *wire.NewOutPoint(&txHash, uint32(i)),
 						}
-						addAddrToCache(bp.txCache, cacheTx)
+						cacheReceiveTxs = append(cacheReceiveTxs, cacheTx)
 					}
+				}
+			}
+
+			// Consolidate payments to self. look for send transactions in
+			// the same tx as receive and combine by offsetting send amount
+			// and discarding receive record.
+			for _, cacheTx := range cacheReceiveTxs {
+				if sendTx, ok := bp.txCache[cacheTx.Address][cacheTx.KeyCategory(cacheTx.Txid, -1, "send")]; ok {
+					sendTx.Amount -= cacheTx.Amount
+				} else {
+					addAddrToCache(bp.txCache, cacheTx)
 				}
 			}
 		}
