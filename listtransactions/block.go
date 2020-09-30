@@ -23,10 +23,11 @@ import (
 )
 
 type BLOCK struct {
-	block *wire.MsgBlock
-	hash chainhash.Hash
+	block  *wire.MsgBlock
+	hash   chainhash.Hash
 	height int64
 }
+
 func (b *BLOCK) Block() *wire.MsgBlock {
 	return b.block
 }
@@ -145,7 +146,7 @@ func (bp *BLOCKPlugin) LoadBlocks(blocksDir string) (err error) {
 				for n, _ := range tx.TxOut {
 					outp := wire.OutPoint{Hash: tx.TxHash(), Index: uint32(n)}
 					bp.txIndex[outp] = &BlockTx{
-						Block: bloc,
+						Block:       bloc,
 						Transaction: tx,
 					}
 				}
@@ -192,7 +193,7 @@ func (bp *BLOCKPlugin) LoadBlocks(blocksDir string) (err error) {
 							Time:          bloc.Block().Header.Timestamp.Unix(),
 							Confirmations: 0, // TODO Confirmations
 							Blockhash:     bloc.Hash(),
-							OutP:		   vin.PreviousOutPoint,
+							OutP:          vin.PreviousOutPoint,
 						}
 						addAddrToCache(bp.txCache, cacheTx)
 					}
@@ -222,7 +223,7 @@ func (bp *BLOCKPlugin) LoadBlocks(blocksDir string) (err error) {
 							Time:          bloc.Block().Header.Timestamp.Unix(),
 							Confirmations: 0, // TODO Confirmations
 							Blockhash:     bloc.Hash(),
-							OutP:		   *wire.NewOutPoint(&txHash, uint32(i)),
+							OutP:          *wire.NewOutPoint(&txHash, uint32(i)),
 						}
 						addAddrToCache(bp.txCache, cacheTx)
 					}
@@ -256,7 +257,7 @@ func (bp *BLOCKPlugin) ListTransactions(fromTime, toTime int64, addresses []stri
 			}
 		}
 	}
- 	return
+	return
 }
 
 // LoadBlocks loads block from the reader.
@@ -500,11 +501,11 @@ func (bp *BLOCKPlugin) readBlockHeader(buf *bytes.Reader) (header *wire.BlockHea
 func NewBLOCKPlugin(blocksDir string) BlockLoader {
 	plugin := &BLOCKPlugin{
 		blocksDir: blocksDir,
-		isReady: false,
-		network: wire.MainNet,
-		blocks: []*BLOCK{},
-		txCache: make(map[string]map[string]*Tx),
-		txIndex: make(map[wire.OutPoint]*BlockTx),
+		isReady:   false,
+		network:   wire.MainNet,
+		blocks:    []*BLOCK{},
+		txCache:   make(map[string]map[string]*Tx),
+		txIndex:   make(map[wire.OutPoint]*BlockTx),
 	}
 	return plugin
 }
