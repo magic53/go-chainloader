@@ -14,11 +14,14 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -42,6 +45,7 @@ func (b *BLOCK) setHash(hash chainhash.Hash) {
 }
 
 type BLOCKPlugin struct {
+	mu        sync.RWMutex
 	blocksDir string
 	isReady   bool
 	network   wire.BitcoinNet
@@ -57,6 +61,8 @@ func (bp *BLOCKPlugin) BlocksDir() string {
 
 // Ready returns true if the block db has loaded.
 func (bp *BLOCKPlugin) Ready() bool {
+	bp.mu.RLock()
+	defer bp.mu.RUnlock()
 	return bp.isReady
 }
 
@@ -124,141 +130,93 @@ func (bp *BLOCKPlugin) LoadBlocks(blocksDir string) (err error) {
 
 	// network magic number to use when reading block db
 	network := networkLE(bp.network)
+	// db count
+	dbCount := len(filterFiles)
+	var wg sync.WaitGroup
+	wg.Add(dbCount)
+
 	// Iterate oldest blocks first (filterFiles sorted descending)
 	for _, file := range filterFiles {
 		path := filepath.Join(blocksDir, file.Name())
-		var fs *os.File
-		fs, err = os.Open(path)
-		if err != nil {
-			return
-		}
-		defer fs.Close()
-		var curBlocks []*BLOCK
-		if curBlocks, err = bp.loadBlocks(bufio.NewReader(fs), network); err != nil {
-			log.Println("Error loading block database")
-			return
-		} else {
-			log.Printf("BLOCK db file loaded: %s\n", path)
-		}
-		// update tx index
-		for _, bloc := range curBlocks {
-			for _, tx := range bloc.Block().Transactions {
-				for n, _ := range tx.TxOut {
-					outp := wire.OutPoint{Hash: tx.TxHash(), Index: uint32(n)}
-					bp.txIndex[outp] = &BlockTx{
-						Block:       bloc,
-						Transaction: tx,
+		go func() {
+			var fs *os.File
+			fs, err = os.Open(path)
+			if err != nil {
+				return
+			}
+			var curBlocks []*BLOCK
+			if curBlocks, err = bp.loadBlocks(bufio.NewReader(fs), network); err != nil {
+				log.Println("Error loading block database")
+				_ = fs.Close()
+				return
+			} else {
+				log.Printf("BLOCK db file loaded: %s\n", path)
+				_ = fs.Close()
+			}
+
+			// update tx index and blocks collection
+			bp.mu.Lock()
+			for _, bloc := range curBlocks {
+				for _, tx := range bloc.Block().Transactions {
+					for n, _ := range tx.TxOut {
+						outp := wire.OutPoint{Hash: tx.TxHash(), Index: uint32(n)}
+						bp.txIndex[outp] = &BlockTx{
+							Block:       bloc,
+							Transaction: tx,
+						}
 					}
 				}
 			}
-		}
-		bp.blocks = append(bp.blocks, curBlocks...)
+			bp.blocks = append(bp.blocks, curBlocks...)
+			bp.mu.Unlock()
+
+			wg.Done()
+		}()
 	}
 
-	sort.Slice(bp.blocks, func(i, j int) bool {
-		return bp.blocks[i].Block().Header.Timestamp.Unix() < bp.blocks[j].Block().Header.Timestamp.Unix()
-	})
+	wg.Wait()
 
-	// Cache transactions
-	for _, bloc := range bp.blocks {
-		for _, tx := range bloc.Block().Transactions {
-			txHash := tx.TxHash()
-			txHashStr := txHash.String()
-			// Send category
-			for _, vin := range tx.TxIn {
-				prevoutTx, ok := bp.txIndex[vin.PreviousOutPoint]
-				if !ok {
-					continue
-				}
-				prevTx := prevoutTx.Transaction
-				scriptPk := prevTx.TxOut[vin.PreviousOutPoint.Index].PkScript
-				var addrs []btcutil.Address
-				if _, addrs, _, err = txscript.ExtractPkScriptAddrs(scriptPk, &chaincfg.MainNetParams); err != nil {
-					continue
-				}
-				// TODO Support additional address types (bech32, p2sh)
-				for _, addr := range addrs {
-					if addr == nil {
-						continue
-					}
-					switch addr := addr.(type) {
-					case *btcutil.AddressPubKeyHash:
-						address := addr.EncodeAddress()
-						cacheTx := &Tx{
-							Txid:          txHashStr,
-							Vout:          -1,
-							Address:       address,
-							Category:      "send",
-							Amount:        float64(prevTx.TxOut[vin.PreviousOutPoint.Index].Value) / 100000000.0, // TODO Assumes coin denomination is 100M
-							Time:          bloc.Block().Header.Timestamp.Unix(),
-							Confirmations: 0, // TODO Confirmations
-							Blockhash:     bloc.Hash(),
-							OutP:          vin.PreviousOutPoint,
-						}
-						addAddrToCache(bp.txCache, cacheTx)
-					}
-				}
-			}
+	// Sort not required atm
+	//sort.Slice(bp.blocks, func(i, j int) bool {
+	//	return bp.blocks[i].Block().Header.Timestamp.Unix() < bp.blocks[j].Block().Header.Timestamp.Unix()
+	//})
 
-			// Receive category
-			var cacheReceiveTxs []*Tx
-			for i, vout := range tx.TxOut {
-				scriptPk := vout.PkScript
-				var addrs []btcutil.Address
-				if _, addrs, _, err = txscript.ExtractPkScriptAddrs(scriptPk, &chaincfg.MainNetParams); err != nil {
-					continue
-				}
-				// TODO Support additional address types (bech32, p2sh)
-				for _, addr := range addrs {
-					if addr == nil {
-						continue
-					}
-					switch addr := addr.(type) {
-					case *btcutil.AddressPubKeyHash:
-						address := addr.EncodeAddress()
-						cacheTx := &Tx{
-							Txid:          txHashStr,
-							Vout:          int32(i),
-							Address:       address,
-							Category:      "receive",
-							Amount:        float64(vout.Value) / 100000000.0, // TODO Assumes coin denomination is 100M
-							Time:          bloc.Block().Header.Timestamp.Unix(),
-							Confirmations: 0, // TODO Confirmations
-							Blockhash:     bloc.Hash(),
-							OutP:          *wire.NewOutPoint(&txHash, uint32(i)),
-						}
-						cacheReceiveTxs = append(cacheReceiveTxs, cacheTx)
-					}
-				}
-			}
+	log.Println("start")
+	// Cache transactions, spawn goroutines to process all blocks
+	// Use a multiplier of num cpu as a starting point, let go
+	// scheduler fill in work
+	shards := runtime.NumCPU() * 4
+	wg.Add(shards)
 
-			// Consolidate payments to self. look for send transactions in
-			// the same tx as receive and combine by offsetting send amount
-			// and discarding receive record.
-			for _, cacheTx := range cacheReceiveTxs {
-				if sendTx, ok := bp.txCache[cacheTx.Address][cacheTx.KeyCategory(cacheTx.Txid, -1, "send")]; ok {
-					sendTx.Amount -= cacheTx.Amount
-				} else {
-					addAddrToCache(bp.txCache, cacheTx)
-				}
-			}
+	blocksLen := len(bp.blocks)
+	rng := blocksLen
+	remainder := 0
+	if rng > shards {
+		if rng%shards != 0 {
+			remainder = rng % shards
 		}
+		rng = int(math.Floor(float64(rng) / float64(shards)))
+	}
+	for i := 0; i < shards; i++ {
+		start := i * rng
+		end := start + rng
+		if i == shards-1 {
+			end += remainder // add remainder to last core
+		}
+		go bp.processTxShard(start, end, &wg)
 	}
 
-	bp.isReady = true
+	wg.Wait()
+	log.Println("done")
+
+	bp.setReady()
 	return
-}
-
-// addAddrToCache adds the
-func addAddrToCache(txCache map[string]map[string]*Tx, tx *Tx) {
-	if _, ok := txCache[tx.Address]; !ok {
-		txCache[tx.Address] = make(map[string]*Tx)
-	}
-	txCache[tx.Address][tx.Key()] = tx
 }
 
 // ListTransactions returns BLOCK transactions between fromTime and toTime.
 func (bp *BLOCKPlugin) ListTransactions(fromTime, toTime int64, addresses []string) (txs []*Tx, err error) {
+	bp.mu.RLock()
+	defer bp.mu.RUnlock()
 	for _, address := range addresses {
 		transactions, ok := bp.txCache[address]
 		if !ok {
@@ -507,6 +465,122 @@ func (bp *BLOCKPlugin) readBlockHeader(buf *bytes.Reader) (header *wire.BlockHea
 
 	header = wire.NewBlockHeader(version, prevBlock, merkle, bits, nonce)
 	header.Timestamp = time.Unix(int64(blockTime), 0)
+	return
+}
+
+// setReady state on the plugin.
+func (bp *BLOCKPlugin) setReady() {
+	bp.mu.Lock()
+	defer bp.mu.Unlock()
+	bp.isReady = true
+}
+
+// processTxShard processes all transactions over specified range of blocks.
+// Creates all send and receive transactions in the range. This func is
+// thread safe.
+func (bp *BLOCKPlugin) processTxShard(start int, end int, wg *sync.WaitGroup) {
+	var cacheSendTxs []*Tx
+	var cacheReceiveTxs []*Tx
+
+	bp.mu.RLock()
+	for i := start; i < end; i++ {
+		var bloc *BLOCK
+		bloc = bp.blocks[i]
+		for _, tx := range bloc.Block().Transactions {
+			txHash := tx.TxHash()
+			txHashStr := txHash.String()
+
+			// Send category
+			for _, vin := range tx.TxIn {
+				prevoutTx, ok := bp.txIndex[vin.PreviousOutPoint]
+				if !ok {
+					continue
+				}
+				prevTx := prevoutTx.Transaction
+				scriptPk := prevTx.TxOut[vin.PreviousOutPoint.Index].PkScript
+				amount := float64(prevTx.TxOut[vin.PreviousOutPoint.Index].Value) / 100000000.0 // TODO Assumes coin denomination is 100M
+				confirmations := 0                                                              // TODO Confirmations for send transaction
+				blockhash := bloc.Hash()
+				outp := &vin.PreviousOutPoint
+				cacheSendTxs = append(cacheSendTxs, extractTxs(scriptPk, txHashStr, -1, amount,
+					bloc.Block().Header.Timestamp, confirmations, "send", &blockhash, outp)...)
+			}
+
+			// Receive category
+			for i, vout := range tx.TxOut {
+				scriptPk := vout.PkScript
+				amount := float64(vout.Value) / 100000000.0 // TODO Assumes coin denomination is 100M
+				confirmations := 0                          // TODO Confirmations for send transaction
+				blockhash := bloc.Hash()
+				outp := wire.NewOutPoint(&txHash, uint32(i))
+				cacheReceiveTxs = append(cacheReceiveTxs, extractTxs(scriptPk, txHashStr, i, amount,
+					bloc.Block().Header.Timestamp, confirmations, "receive", &blockhash, outp)...)
+			}
+		}
+	}
+	bp.mu.RUnlock()
+
+	bp.mu.Lock()
+	// Sends
+	for _, cacheTx := range cacheReceiveTxs {
+		addAddrToCache(bp.txCache, cacheTx)
+	}
+
+	// Receives
+	// Consolidate payments to self. look for send transactions in
+	// the same tx as receive and combine by offsetting send amount
+	// and discarding receive record.
+	for _, cacheTx := range cacheReceiveTxs {
+		if sendTx, ok := bp.txCache[cacheTx.Address][cacheTx.KeyCategory(cacheTx.Txid, -1, "send")]; ok {
+			sendTx.Amount -= cacheTx.Amount
+		} else {
+			addAddrToCache(bp.txCache, cacheTx)
+		}
+	}
+	bp.mu.Unlock()
+
+	wg.Done()
+}
+
+// addAddrToCache adds the tx to the cache. Not thread safe, expects any
+// mutexes to be locked outside this call.
+func addAddrToCache(txCache map[string]map[string]*Tx, tx *Tx) {
+	if _, ok := txCache[tx.Address]; !ok {
+		txCache[tx.Address] = make(map[string]*Tx)
+	}
+	txCache[tx.Address][tx.Key()] = tx
+}
+
+// extractTxs derives transactions from scriptPubKey.
+func extractTxs(scriptPk []byte, txHash string, txVout int, amount float64, time2 time.Time, confirmations int,
+	category string, blockHash *chainhash.Hash, outp *wire.OutPoint) (txs []*Tx) {
+	var addrs []btcutil.Address
+	var err error
+	if _, addrs, _, err = txscript.ExtractPkScriptAddrs(scriptPk, &chaincfg.MainNetParams); err != nil {
+		return
+	}
+	// TODO Support additional address types (bech32, p2sh)
+	for _, addr := range addrs {
+		if addr == nil {
+			continue
+		}
+		switch addr := addr.(type) {
+		case *btcutil.AddressPubKeyHash:
+			address := addr.EncodeAddress()
+			cacheTx := &Tx{
+				Txid:          txHash,
+				Vout:          int32(txVout),
+				Address:       address,
+				Category:      category,
+				Amount:        amount,
+				Time:          time2.Unix(),
+				Confirmations: uint32(confirmations), // TODO Confirmations
+				Blockhash:     *blockHash,
+				OutP:          *outp,
+			}
+			txs = append(txs, cacheTx)
+		}
+	}
 	return
 }
 
