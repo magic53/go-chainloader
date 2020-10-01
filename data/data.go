@@ -1,4 +1,4 @@
-package listtransactions
+package data
 
 import (
 	"encoding/binary"
@@ -61,15 +61,15 @@ func LoadPlugin(plugin BlockLoader) (err error) {
 	return nil
 }
 
-// networkLE returns the little endian byte representation of the network magic number.
-func networkLE(net wire.BitcoinNet) []byte {
+// NetworkLE returns the little endian byte representation of the network magic number.
+func NetworkLE(net wire.BitcoinNet) []byte {
 	network := make([]byte, 4)
 	binary.LittleEndian.PutUint32(network, uint32(net))
 	return network
 }
 
-// readVins deserializes tx vins.
-func readVins(buf io.ReadSeeker) (vins []*wire.TxIn, txVinsLen uint64, err error) {
+// ReadVins deserializes tx vins.
+func ReadVins(buf io.ReadSeeker) (vins []*wire.TxIn, txVinsLen uint64, err error) {
 	if txVinsLen, err = wire.ReadVarInt(buf, 0); err != nil {
 		log.Println("failed to read tx vin length", err.Error())
 		return
@@ -115,8 +115,8 @@ func readVins(buf io.ReadSeeker) (vins []*wire.TxIn, txVinsLen uint64, err error
 	return
 }
 
-// readVouts deserializes tx vouts.
-func readVouts(buf io.ReadSeeker) (vouts []*wire.TxOut, txVoutLen uint64, err error) {
+// ReadVouts deserializes tx vouts.
+func ReadVouts(buf io.ReadSeeker) (vouts []*wire.TxOut, txVoutLen uint64, err error) {
 	if txVoutLen, err = wire.ReadVarInt(buf, 0); err != nil {
 		return
 	}
@@ -141,8 +141,8 @@ func readVouts(buf io.ReadSeeker) (vouts []*wire.TxOut, txVoutLen uint64, err er
 	return
 }
 
-// shardsIter returns the iteration details for the current shard.
-func shardsIter(shards int, currentShard int, rng int, remainder int) (start, end int) {
+// ShardsIter returns the iteration details for the current shard.
+func ShardsIter(shards int, currentShard int, rng int, remainder int) (start, end int) {
 	start = currentShard * rng
 	end = start + rng
 	if currentShard == shards-1 {
@@ -151,9 +151,9 @@ func shardsIter(shards int, currentShard int, rng int, remainder int) (start, en
 	return
 }
 
-// shardsData returns an optimal shard count, range, and remainder for the
+// ShardsData returns an optimal shard count, range, and remainder for the
 // desired shard count.
-func shardsData(desiredShards int, blocksLen int) (shards, rng, remainder int) {
+func ShardsData(desiredShards int, blocksLen int) (shards, rng, remainder int) {
 	shards = desiredShards
 	rng = blocksLen
 	remainder = 0
@@ -169,8 +169,8 @@ func shardsData(desiredShards int, blocksLen int) (shards, rng, remainder int) {
 	return
 }
 
-// fileExists returns whether the given file or directory exists.
-func fileExists(path string) (bool, error) {
+// FileExists returns whether the given file or directory exists.
+func FileExists(path string) (bool, error) {
 	_, err := os.Stat(path)
 	if err == nil {
 		return true, nil

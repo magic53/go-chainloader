@@ -1,4 +1,4 @@
-package listtransactions
+package block
 
 import (
 	"bufio"
@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/blocknetdx/go-exrplugins/data"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
@@ -43,22 +44,22 @@ func (b *BLOCK) setHash(hash chainhash.Hash) {
 	b.hash = hash
 }
 
-type BLOCKPlugin struct {
+type Plugin struct {
 	mu        sync.RWMutex
 	blocksDir string
 	isReady   bool
 	network   wire.BitcoinNet
-	txIndex   map[wire.OutPoint]*BlockTx
-	txCache   map[string]map[string]*Tx
+	txIndex   map[wire.OutPoint]*data.BlockTx
+	txCache   map[string]map[string]*data.Tx
 }
 
 // BlocksDir returns the location of all block dat files.
-func (bp *BLOCKPlugin) BlocksDir() string {
+func (bp *Plugin) BlocksDir() string {
 	return bp.blocksDir
 }
 
 // Ready returns true if the block db has loaded.
-func (bp *BLOCKPlugin) Ready() bool {
+func (bp *Plugin) Ready() bool {
 	bp.mu.RLock()
 	defer bp.mu.RUnlock()
 	return bp.isReady
@@ -66,16 +67,16 @@ func (bp *BLOCKPlugin) Ready() bool {
 
 // ClearIndex removes references to the transaction index. This typically frees up
 // significant memory.
-func (bp *BLOCKPlugin) ClearIndex() {
+func (bp *Plugin) ClearIndex() {
 	bp.mu.Lock()
 	defer bp.mu.Unlock()
-	bp.txIndex = map[wire.OutPoint]*BlockTx{}
+	bp.txIndex = map[wire.OutPoint]*data.BlockTx{}
 }
 
 // LoadBlocks load all BLOCK transactions in the blocksDir.
-func (bp *BLOCKPlugin) LoadBlocks(blocksDir string, cfg *chaincfg.Params) (err error) {
+func (bp *Plugin) LoadBlocks(blocksDir string, cfg *chaincfg.Params) (err error) {
 	exists := false
-	if exists, err = fileExists(blocksDir); err != nil || !exists {
+	if exists, err = data.FileExists(blocksDir); err != nil || !exists {
 		if !exists {
 			err = errors.New(fmt.Sprintf("File doesn't exist: %s", blocksDir))
 		}
@@ -134,7 +135,7 @@ func (bp *BLOCKPlugin) LoadBlocks(blocksDir string, cfg *chaincfg.Params) (err e
 	}
 
 	// network magic number to use when reading block db
-	network := networkLE(bp.network)
+	network := data.NetworkLE(bp.network)
 
 	// Iterate oldest blocks first (filterFiles sorted descending)
 	for _, file := range filterFiles {
@@ -145,7 +146,7 @@ func (bp *BLOCKPlugin) LoadBlocks(blocksDir string, cfg *chaincfg.Params) (err e
 			return
 		}
 		var curBlocks []*BLOCK
-		var txIndex []*BlockTx
+		var txIndex []*data.BlockTx
 		if curBlocks, txIndex, err = bp.loadBlocks(bufio.NewReader(fs), network); err != nil {
 			log.Println("Error loading block database")
 			_ = fs.Close()
@@ -171,11 +172,11 @@ func (bp *BLOCKPlugin) LoadBlocks(blocksDir string, cfg *chaincfg.Params) (err e
 		// Use a multiplier of num cpu as a starting point, let go scheduler fill
 		// in work.
 		blocksLen := len(curBlocks)
-		shards, rng, remainder := shardsData(runtime.NumCPU()*4, blocksLen)
+		shards, rng, remainder := data.ShardsData(runtime.NumCPU()*4, blocksLen)
 		var wg sync.WaitGroup
 		wg.Add(shards)
 		for i := 0; i < shards; i++ {
-			start, end := shardsIter(shards, i, rng, remainder)
+			start, end := data.ShardsIter(shards, i, rng, remainder)
 			go bp.processTxShard(curBlocks, start, end, cfg, &wg)
 		}
 		wg.Wait()
@@ -186,26 +187,8 @@ func (bp *BLOCKPlugin) LoadBlocks(blocksDir string, cfg *chaincfg.Params) (err e
 	return
 }
 
-// ListTransactions returns BLOCK transactions between fromTime and toTime.
-func (bp *BLOCKPlugin) ListTransactions(fromTime, toTime int64, addresses []string) (txs []*Tx, err error) {
-	bp.mu.RLock()
-	defer bp.mu.RUnlock()
-	for _, address := range addresses {
-		transactions, ok := bp.txCache[address]
-		if !ok {
-			continue
-		}
-		for _, tx := range transactions {
-			if tx.Time >= fromTime && tx.Time <= toTime {
-				txs = append(txs, tx)
-			}
-		}
-	}
-	return
-}
-
 // LoadBlocks loads block from the reader.
-func (bp *BLOCKPlugin) loadBlocks(sc *bufio.Reader, network []byte) (blocks []*BLOCK, txIndex []*BlockTx, err error) {
+func (bp *Plugin) loadBlocks(sc *bufio.Reader, network []byte) (blocks []*BLOCK, txIndex []*data.BlockTx, err error) {
 	for err == nil && sc.Size() > 80 {
 		var b byte
 		if b, err = sc.ReadByte(); err != nil {
@@ -271,7 +254,7 @@ func (bp *BLOCKPlugin) loadBlocks(sc *bufio.Reader, network []byte) (blocks []*B
 			for n := range tx.TxOut {
 				txHash := tx.TxHash()
 				outp := wire.NewOutPoint(&txHash, uint32(n))
-				txIndex = append(txIndex, &BlockTx{
+				txIndex = append(txIndex, &data.BlockTx{
 					OutP:        outp,
 					Transaction: tx,
 				})
@@ -287,7 +270,7 @@ func (bp *BLOCKPlugin) loadBlocks(sc *bufio.Reader, network []byte) (blocks []*B
 }
 
 // readBlock deserializes bytes into block data.
-func (bp *BLOCKPlugin) readBlock(buf io.ReadSeeker) (block *wire.MsgBlock, size int, err error) {
+func (bp *Plugin) readBlock(buf io.ReadSeeker) (block *wire.MsgBlock, size int, err error) {
 	var header *wire.BlockHeader
 	if header, err = bp.readBlockHeader(buf); err != nil {
 		log.Println("failed to read block header", err.Error())
@@ -326,11 +309,11 @@ func (bp *BLOCKPlugin) readBlock(buf io.ReadSeeker) (block *wire.MsgBlock, size 
 			}
 			if bytes.Equal(txWitnessMarker, []byte{0x0, 0x1}) {
 				var vinLen uint64
-				if vins, vinLen, err = readVins(buf); err != nil {
+				if vins, vinLen, err = data.ReadVins(buf); err != nil {
 					log.Println("failed to read tx vins 2", err.Error())
 					return
 				}
-				if vouts, _, err = readVouts(buf); err != nil {
+				if vouts, _, err = data.ReadVouts(buf); err != nil {
 					log.Println("failed to read tx vouts 2", err.Error())
 					return
 				}
@@ -361,21 +344,21 @@ func (bp *BLOCKPlugin) readBlock(buf io.ReadSeeker) (block *wire.MsgBlock, size 
 					log.Println("failed to reset tx vin dummy", err.Error())
 					return
 				}
-				if vins, _, err = readVins(buf); err != nil {
+				if vins, _, err = data.ReadVins(buf); err != nil {
 					log.Println("failed to read tx vins 2", err.Error())
 					return
 				}
-				if vouts, _, err = readVouts(buf); err != nil {
+				if vouts, _, err = data.ReadVouts(buf); err != nil {
 					log.Println("failed to read tx vouts 2", err.Error())
 					return
 				}
 			}
 		} else { // no witness
-			if vins, _, err = readVins(buf); err != nil {
+			if vins, _, err = data.ReadVins(buf); err != nil {
 				log.Println("failed to read tx vins 2", err.Error())
 				return
 			}
-			if vouts, _, err = readVouts(buf); err != nil {
+			if vouts, _, err = data.ReadVouts(buf); err != nil {
 				log.Println("failed to read tx vouts 2", err.Error())
 				return
 			}
@@ -402,7 +385,7 @@ func (bp *BLOCKPlugin) readBlock(buf io.ReadSeeker) (block *wire.MsgBlock, size 
 }
 
 // readBlockHeader deserializes block header.
-func (bp *BLOCKPlugin) readBlockHeader(buf io.ReadSeeker) (header *wire.BlockHeader, err error) {
+func (bp *Plugin) readBlockHeader(buf io.ReadSeeker) (header *wire.BlockHeader, err error) {
 	versionB := make([]byte, 4)
 	prevBlockB := make([]byte, 32)
 	merkleB := make([]byte, 32)
@@ -457,7 +440,7 @@ func (bp *BLOCKPlugin) readBlockHeader(buf io.ReadSeeker) (header *wire.BlockHea
 }
 
 // setReady state on the plugin.
-func (bp *BLOCKPlugin) setReady() {
+func (bp *Plugin) setReady() {
 	bp.mu.Lock()
 	defer bp.mu.Unlock()
 	bp.isReady = true
@@ -466,9 +449,9 @@ func (bp *BLOCKPlugin) setReady() {
 // processTxShard processes all transactions over specified range of blocks.
 // Creates all send and receive transactions in the range. This func is
 // thread safe.
-func (bp *BLOCKPlugin) processTxShard(blocks []*BLOCK, start, end int, cfg *chaincfg.Params, wg *sync.WaitGroup) {
-	var cacheSendTxs []*Tx
-	var cacheReceiveTxs []*Tx
+func (bp *Plugin) processTxShard(blocks []*BLOCK, start, end int, cfg *chaincfg.Params, wg *sync.WaitGroup) {
+	var cacheSendTxs []*data.Tx
+	var cacheReceiveTxs []*data.Tx
 
 	bp.mu.RLock()
 	for i := start; i < end; i++ {
@@ -531,16 +514,16 @@ func (bp *BLOCKPlugin) processTxShard(blocks []*BLOCK, start, end int, cfg *chai
 
 // addAddrToCache adds the tx to the cache. Not thread safe, expects any
 // mutexes to be locked outside this call.
-func addAddrToCache(txCache map[string]map[string]*Tx, tx *Tx) {
+func addAddrToCache(txCache map[string]map[string]*data.Tx, tx *data.Tx) {
 	if _, ok := txCache[tx.Address]; !ok {
-		txCache[tx.Address] = make(map[string]*Tx)
+		txCache[tx.Address] = make(map[string]*data.Tx)
 	}
 	txCache[tx.Address][tx.Key()] = tx
 }
 
 // extractTxs derives transactions from scriptPubKey.
 func extractTxs(scriptPk []byte, txHash string, txVout int, amount float64, blockTime time.Time, confirmations int,
-	category string, blockHash *chainhash.Hash, outp *wire.OutPoint, cfg *chaincfg.Params) (txs []*Tx) {
+	category string, blockHash *chainhash.Hash, outp *wire.OutPoint, cfg *chaincfg.Params) (txs []*data.Tx) {
 	var addrs []btcutil.Address
 	var err error
 	if _, addrs, _, err = txscript.ExtractPkScriptAddrs(scriptPk, cfg); err != nil {
@@ -554,7 +537,7 @@ func extractTxs(scriptPk []byte, txHash string, txVout int, amount float64, bloc
 		switch addr := addr.(type) {
 		case *btcutil.AddressPubKeyHash:
 			address := addr.EncodeAddress()
-			cacheTx := &Tx{
+			cacheTx := &data.Tx{
 				Txid:          txHash,
 				Vout:          int32(txVout),
 				Address:       address,
@@ -571,14 +554,14 @@ func extractTxs(scriptPk []byte, txHash string, txVout int, amount float64, bloc
 	return
 }
 
-// NewBLOCKPlugin returns new BLOCK plugin instance.
-func NewBLOCKPlugin(blocksDir string) BlockLoader {
-	plugin := &BLOCKPlugin{
+// NewPlugin returns new BLOCK plugin instance.
+func NewPlugin(blocksDir string) data.BlockLoader {
+	plugin := &Plugin{
 		blocksDir: blocksDir,
 		isReady:   false,
 		network:   wire.MainNet,
-		txCache:   make(map[string]map[string]*Tx),
-		txIndex:   make(map[wire.OutPoint]*BlockTx),
+		txCache:   make(map[string]map[string]*data.Tx),
+		txIndex:   make(map[wire.OutPoint]*data.BlockTx),
 	}
 	return plugin
 }

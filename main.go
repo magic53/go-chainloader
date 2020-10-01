@@ -3,7 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/blocknetdx/go-exrplugins/listtransactions"
+	"github.com/blocknetdx/go-exrplugins/block"
+	"github.com/blocknetdx/go-exrplugins/data"
 	"log"
 	"math"
 	"sort"
@@ -34,8 +35,8 @@ func main() {
 
 	var err error
 	blockDir := "/opt/blockchain/block/data-bmainnet-goleveldb/blocks"
-	blockPlugin := listtransactions.NewBLOCKPlugin(blockDir)
-	if err = listtransactions.LoadPlugin(blockPlugin); err != nil {
+	blockPlugin := block.NewPlugin(blockDir)
+	if err = data.LoadPlugin(blockPlugin); err != nil {
 		log.Println("BLOCK failed!", err.Error())
 		return
 	}
