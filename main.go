@@ -35,7 +35,7 @@ func main() {
 
 	var err error
 	blockDir := "/opt/blockchain/block/data-bmainnet-goleveldb/blocks"
-	blockPlugin := block.NewPlugin(blockDir)
+	blockPlugin := block.NewPlugin(&block.MainNetParams, blockDir)
 	if err = data.LoadPlugin(blockPlugin); err != nil {
 		log.Println("BLOCK failed!", err.Error())
 		return
