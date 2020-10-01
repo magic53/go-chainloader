@@ -121,9 +121,6 @@ func (bp *Plugin) LoadBlocks(blocksDir string) (err error) {
 		filterFiles = filterFiles[:1]
 	}
 
-	// network magic number to use when reading block db
-	network := data.NetworkLE(bp.cfg.Net)
-
 	// Iterate oldest blocks first (filterFiles sorted descending)
 	for _, file := range filterFiles {
 		path := filepath.Join(blocksDir, file.Name())
@@ -132,9 +129,7 @@ func (bp *Plugin) LoadBlocks(blocksDir string) (err error) {
 		if err != nil {
 			return
 		}
-		var curBlocks []*BLOCK
-		var txIndex []*data.BlockTx
-		if curBlocks, txIndex, err = bp.loadBlocks(bufio.NewReader(fs), network); err != nil {
+		if err = bp.processBlocks(bufio.NewReader(fs)); err != nil {
 			log.Println("Error loading block database")
 			_ = fs.Close()
 			return
@@ -142,34 +137,8 @@ func (bp *Plugin) LoadBlocks(blocksDir string) (err error) {
 			log.Printf("BLOCK db file loaded: %s\n", path)
 			_ = fs.Close()
 		}
-
-		// Update the tx index
-		bp.mu.Lock()
-		for _, txi := range txIndex {
-			bp.txIndex[*txi.OutP] = txi
-		}
-		bp.mu.Unlock()
-
-		// Sort blocks by time ascending
-		sort.Slice(curBlocks, func(i, j int) bool {
-			return curBlocks[i].Block().Header.Timestamp.Unix() < curBlocks[j].Block().Header.Timestamp.Unix()
-		})
-
-		// Process transactions, spawn goroutines to process all current blocks
-		// Use a multiplier of num cpu as a starting point, let go scheduler fill
-		// in work.
-		blocksLen := len(curBlocks)
-		shards, rng, remainder := data.ShardsData(runtime.NumCPU()*4, blocksLen)
-		var wg sync.WaitGroup
-		wg.Add(shards)
-		for i := 0; i < shards; i++ {
-			start, end := data.ShardsIter(shards, i, rng, remainder)
-			go bp.processTxShard(curBlocks, start, end, &wg)
-		}
-		wg.Wait()
 	}
 
-	bp.ClearIndex()
 	bp.setReady()
 	return
 }
@@ -235,11 +204,55 @@ func (bp *Plugin) ReadBlockHeader(buf io.ReadSeeker) (header *wire.BlockHeader, 
 	return
 }
 
+// AddBlocks process new blocks received by the network to keep internal chain data
+// up to date.
+func (bp *Plugin) AddBlocks(blocks []byte) error {
+	r := bytes.NewReader(blocks)
+	return bp.processBlocks(bufio.NewReader(r))
+}
+
 // setReady state on the plugin.
 func (bp *Plugin) setReady() {
 	bp.mu.Lock()
 	defer bp.mu.Unlock()
 	bp.isReady = true
+}
+
+// processBlocks will process all blocks in the buffer.
+func (bp *Plugin) processBlocks(sc *bufio.Reader) (err error) {
+	var curBlocks []*BLOCK
+	var txIndex []*data.BlockTx
+	if curBlocks, txIndex, err = bp.loadBlocks(sc, data.NetworkLE(bp.Network())); err != nil {
+		log.Println("Error loading block database")
+		return
+	}
+
+	// Update the tx index
+	bp.mu.Lock()
+	for _, txi := range txIndex {
+		bp.txIndex[*txi.OutP] = txi
+	}
+	bp.mu.Unlock()
+
+	// Sort blocks by time ascending
+	sort.Slice(curBlocks, func(i, j int) bool {
+		return curBlocks[i].Block().Header.Timestamp.Unix() < curBlocks[j].Block().Header.Timestamp.Unix()
+	})
+
+	// Process transactions, spawn goroutines to process all current blocks
+	// Use a multiplier of num cpu as a starting point, let go scheduler fill
+	// in work.
+	blocksLen := len(curBlocks)
+	shards, rng, remainder := data.ShardsData(runtime.NumCPU()*4, blocksLen)
+	var wg sync.WaitGroup
+	wg.Add(shards)
+	for i := 0; i < shards; i++ {
+		start, end := data.ShardsIter(shards, i, rng, remainder)
+		go bp.processTxShard(curBlocks, start, end, &wg)
+	}
+	wg.Wait()
+
+	return
 }
 
 // processTxShard processes all transactions over specified range of blocks.
@@ -320,7 +333,7 @@ func addAddrToCache(txCache map[string]map[string]*data.Tx, tx *data.Tx) {
 }
 
 // NewPlugin returns new BLOCK plugin instance.
-func NewPlugin(cfg *chaincfg.Params, blocksDir string) data.BlockLoader {
+func NewPlugin(cfg *chaincfg.Params, blocksDir string) data.Plugin {
 	plugin := &Plugin{
 		cfg:       cfg,
 		blocksDir: blocksDir,

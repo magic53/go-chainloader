@@ -17,14 +17,14 @@ import (
 	"time"
 )
 
-type BlockInterface interface {
+type Block interface {
 	Block() *wire.MsgBlock
 	Hash() chainhash.Hash
 	Height() int64
 	setHash(hash chainhash.Hash)
 }
 
-type BlockLoader interface {
+type Plugin interface {
 	BlocksDir() string
 	Ready() bool
 	Network() wire.BitcoinNet
@@ -33,11 +33,37 @@ type BlockLoader interface {
 	LoadBlocks(blocksDir string) error
 	ReadBlock(buf io.ReadSeeker) (*wire.MsgBlock, error)
 	ReadBlockHeader(buf io.ReadSeeker) (*wire.BlockHeader, error)
+	AddBlocks(blocks []byte) error
 	ListTransactions(fromTime, toTime int64, addresses []string) ([]*Tx, error)
 }
 
+type Tx struct {
+	Txid          string          `json:"txid"`
+	Vout          int32           `json:"n"`
+	Address       string          `json:"address"`
+	Category      string          `json:"category"` // send, receive
+	Amount        float64         `json:"amount"`
+	Time          int64           `json:"time"`
+	Confirmations uint32          `json:"confirmations"`
+	Blockhash     *chainhash.Hash `json:"-"`
+	OutP          *wire.OutPoint  `json:"-"`
+}
+
+func (tx *Tx) Key() string {
+	return fmt.Sprintf("%v%v_%s", tx.Txid, tx.Vout, tx.Category)
+}
+
+func (tx *Tx) KeyCategory(txid string, vout int32, category string) string {
+	return fmt.Sprintf("%v%v_%s", txid, vout, category)
+}
+
+type BlockTx struct {
+	OutP        *wire.OutPoint
+	Transaction *wire.MsgTx
+}
+
 // ProcessTransactions will process all transactions in blocks.
-func ProcessTransactions(plugin BlockLoader, block *wire.MsgBlock, transactions []*wire.MsgTx, txIndex map[wire.OutPoint]*BlockTx) (sendTxs, receiveTxs []*Tx) {
+func ProcessTransactions(plugin Plugin, block *wire.MsgBlock, transactions []*wire.MsgTx, txIndex map[wire.OutPoint]*BlockTx) (sendTxs, receiveTxs []*Tx) {
 	blockhash := chainhash.Hash{} // TODO block.BlockHash()
 	cfg := plugin.Config()
 	for _, tx := range transactions {
@@ -107,33 +133,8 @@ func ExtractAddresses(scriptPk []byte, txHash string, txVout int, amount float64
 	return
 }
 
-type Tx struct {
-	Txid          string          `json:"txid"`
-	Vout          int32           `json:"n"`
-	Address       string          `json:"address"`
-	Category      string          `json:"category"` // send, receive
-	Amount        float64         `json:"amount"`
-	Time          int64           `json:"time"`
-	Confirmations uint32          `json:"confirmations"`
-	Blockhash     *chainhash.Hash `json:"-"`
-	OutP          *wire.OutPoint  `json:"-"`
-}
-
-func (tx *Tx) Key() string {
-	return fmt.Sprintf("%v%v_%s", tx.Txid, tx.Vout, tx.Category)
-}
-
-func (tx *Tx) KeyCategory(txid string, vout int32, category string) string {
-	return fmt.Sprintf("%v%v_%s", txid, vout, category)
-}
-
-type BlockTx struct {
-	OutP        *wire.OutPoint
-	Transaction *wire.MsgTx
-}
-
 // LoadPlugin opens the block database and loads block data.
-func LoadPlugin(plugin BlockLoader) (err error) {
+func LoadPlugin(plugin Plugin) (err error) {
 	log.Printf("Loading block database from '%s'", plugin.BlocksDir())
 	if err = plugin.LoadBlocks(plugin.BlocksDir()); err != nil {
 		return
