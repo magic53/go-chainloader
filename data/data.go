@@ -33,7 +33,7 @@ type Plugin interface {
 	LoadBlocks(blocksDir string) error
 	ReadBlock(buf io.ReadSeeker) (*wire.MsgBlock, error)
 	ReadBlockHeader(buf io.ReadSeeker) (*wire.BlockHeader, error)
-	AddBlocks(blocks []byte) error
+	AddBlocks(blocks []byte) ([]*Tx, error)
 	ListTransactions(fromTime, toTime int64, addresses []string) ([]*Tx, error)
 }
 

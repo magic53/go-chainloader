@@ -129,7 +129,7 @@ func (bp *Plugin) LoadBlocks(blocksDir string) (err error) {
 		if err != nil {
 			return
 		}
-		if err = bp.processBlocks(bufio.NewReader(fs)); err != nil {
+		if _, err = bp.processBlocks(bufio.NewReader(fs)); err != nil {
 			log.Println("Error loading block database")
 			_ = fs.Close()
 			return
@@ -206,9 +206,10 @@ func (bp *Plugin) ReadBlockHeader(buf io.ReadSeeker) (header *wire.BlockHeader, 
 
 // AddBlocks process new blocks received by the network to keep internal chain data
 // up to date.
-func (bp *Plugin) AddBlocks(blocks []byte) error {
+func (bp *Plugin) AddBlocks(blocks []byte) (txs []*data.Tx, err error) {
 	r := bytes.NewReader(blocks)
-	return bp.processBlocks(bufio.NewReader(r))
+	txs, err = bp.processBlocks(bufio.NewReader(r))
+	return
 }
 
 // setReady state on the plugin.
@@ -219,36 +220,42 @@ func (bp *Plugin) setReady() {
 }
 
 // processBlocks will process all blocks in the buffer.
-func (bp *Plugin) processBlocks(sc *bufio.Reader) (err error) {
-	var curBlocks []*BLOCK
-	var txIndex []*data.BlockTx
-	if curBlocks, txIndex, err = bp.loadBlocks(sc, data.NetworkLE(bp.Network())); err != nil {
+func (bp *Plugin) processBlocks(sc *bufio.Reader) (txs []*data.Tx, err error) {
+	var blocks []*BLOCK
+	var txBlocks []*data.BlockTx
+	if blocks, txBlocks, err = bp.loadBlocks(sc, data.NetworkLE(bp.Network())); err != nil {
 		log.Println("Error loading block database")
 		return
 	}
 
 	// Update the tx index
 	bp.mu.Lock()
-	for _, txi := range txIndex {
+	for _, txi := range txBlocks {
 		bp.txIndex[*txi.OutP] = txi
 	}
 	bp.mu.Unlock()
 
 	// Sort blocks by time ascending
-	sort.Slice(curBlocks, func(i, j int) bool {
-		return curBlocks[i].Block().Header.Timestamp.Unix() < curBlocks[j].Block().Header.Timestamp.Unix()
+	sort.Slice(blocks, func(i, j int) bool {
+		return blocks[i].Block().Header.Timestamp.Unix() < blocks[j].Block().Header.Timestamp.Unix()
 	})
 
 	// Process transactions, spawn goroutines to process all current blocks
 	// Use a multiplier of num cpu as a starting point, let go scheduler fill
 	// in work.
-	blocksLen := len(curBlocks)
+	blocksLen := len(blocks)
 	shards, rng, remainder := data.ShardsData(runtime.NumCPU()*4, blocksLen)
 	var wg sync.WaitGroup
 	wg.Add(shards)
+	mu := sync.Mutex{}
 	for i := 0; i < shards; i++ {
 		start, end := data.ShardsIter(shards, i, rng, remainder)
-		go bp.processTxShard(curBlocks, start, end, &wg)
+		go func() {
+			transactions := bp.processTxShard(blocks, start, end, &wg)
+			mu.Lock()
+			txs = append(txs, transactions...)
+			mu.Unlock()
+		}()
 	}
 	wg.Wait()
 
@@ -258,7 +265,7 @@ func (bp *Plugin) processBlocks(sc *bufio.Reader) (err error) {
 // processTxShard processes all transactions over specified range of blocks.
 // Creates all send and receive transactions in the range. This func is
 // thread safe.
-func (bp *Plugin) processTxShard(blocks []*BLOCK, start, end int, wg *sync.WaitGroup) {
+func (bp *Plugin) processTxShard(blocks []*BLOCK, start, end int, wg *sync.WaitGroup) (txs []*data.Tx) {
 	blocksLen := len(blocks)
 	if start >= blocksLen {
 		return
@@ -283,6 +290,7 @@ func (bp *Plugin) processTxShard(blocks []*BLOCK, start, end int, wg *sync.WaitG
 	// Sends
 	for _, cacheTx := range cacheSendTxs {
 		addAddrToCache(bp.txCache, cacheTx)
+		txs = append(txs, cacheTx)
 	}
 
 	// Receives
@@ -294,11 +302,13 @@ func (bp *Plugin) processTxShard(blocks []*BLOCK, start, end int, wg *sync.WaitG
 			sendTx.Amount -= cacheTx.Amount
 		} else {
 			addAddrToCache(bp.txCache, cacheTx)
+			txs = append(txs, cacheTx)
 		}
 	}
 	bp.mu.Unlock()
 
 	wg.Done()
+	return
 }
 
 type BLOCK struct {
