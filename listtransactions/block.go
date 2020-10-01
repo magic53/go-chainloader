@@ -14,7 +14,6 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
-	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -49,7 +48,6 @@ type BLOCKPlugin struct {
 	blocksDir string
 	isReady   bool
 	network   wire.BitcoinNet
-	blocks    []*BLOCK
 	txIndex   map[wire.OutPoint]*BlockTx
 	txCache   map[string]map[string]*Tx
 }
@@ -66,8 +64,16 @@ func (bp *BLOCKPlugin) Ready() bool {
 	return bp.isReady
 }
 
+// ClearIndex removes references to the transaction index. This typically frees up
+// significant memory.
+func (bp *BLOCKPlugin) ClearIndex() {
+	bp.mu.Lock()
+	defer bp.mu.Unlock()
+	bp.txIndex = map[wire.OutPoint]*BlockTx{}
+}
+
 // LoadBlocks load all BLOCK transactions in the blocksDir.
-func (bp *BLOCKPlugin) LoadBlocks(blocksDir string) (err error) {
+func (bp *BLOCKPlugin) LoadBlocks(blocksDir string, cfg *chaincfg.Params) (err error) {
 	exists := false
 	if exists, err = fileExists(blocksDir); err != nil || !exists {
 		if !exists {
@@ -120,95 +126,62 @@ func (bp *BLOCKPlugin) LoadBlocks(blocksDir string) (err error) {
 	})
 
 	// TODO Limit loading the number of blk files
-	//dats := 2 // len(filterFiles)
-	//if len(filterFiles) >= dats {
-	//	filterFiles = filterFiles[:dats]
-	//} else {
-	//	filterFiles = filterFiles[:1]
-	//}
-	filterFiles = filterFiles[:2]
+	dats := 3 // len(filterFiles)
+	if len(filterFiles) >= dats {
+		filterFiles = filterFiles[:dats]
+	} else {
+		filterFiles = filterFiles[:1]
+	}
 
 	// network magic number to use when reading block db
 	network := networkLE(bp.network)
-	// db count
-	dbCount := len(filterFiles)
-	var wg sync.WaitGroup
-	wg.Add(dbCount)
 
 	// Iterate oldest blocks first (filterFiles sorted descending)
 	for _, file := range filterFiles {
 		path := filepath.Join(blocksDir, file.Name())
-		go func() {
-			var fs *os.File
-			fs, err = os.Open(path)
-			if err != nil {
-				return
-			}
-			var curBlocks []*BLOCK
-			if curBlocks, err = bp.loadBlocks(bufio.NewReader(fs), network); err != nil {
-				log.Println("Error loading block database")
-				_ = fs.Close()
-				return
-			} else {
-				log.Printf("BLOCK db file loaded: %s\n", path)
-				_ = fs.Close()
-			}
-
-			// update tx index and blocks collection
-			bp.mu.Lock()
-			for _, bloc := range curBlocks {
-				for _, tx := range bloc.Block().Transactions {
-					for n, _ := range tx.TxOut {
-						outp := wire.OutPoint{Hash: tx.TxHash(), Index: uint32(n)}
-						bp.txIndex[outp] = &BlockTx{
-							Block:       bloc,
-							Transaction: tx,
-						}
-					}
-				}
-			}
-			bp.blocks = append(bp.blocks, curBlocks...)
-			bp.mu.Unlock()
-
-			wg.Done()
-		}()
-	}
-
-	wg.Wait()
-
-	// Sort not required atm
-	//sort.Slice(bp.blocks, func(i, j int) bool {
-	//	return bp.blocks[i].Block().Header.Timestamp.Unix() < bp.blocks[j].Block().Header.Timestamp.Unix()
-	//})
-
-	log.Println("start")
-	// Cache transactions, spawn goroutines to process all blocks
-	// Use a multiplier of num cpu as a starting point, let go
-	// scheduler fill in work
-	shards := runtime.NumCPU() * 4
-	wg.Add(shards)
-
-	blocksLen := len(bp.blocks)
-	rng := blocksLen
-	remainder := 0
-	if rng > shards {
-		if rng%shards != 0 {
-			remainder = rng % shards
+		var fs *os.File
+		fs, err = os.Open(path)
+		if err != nil {
+			return
 		}
-		rng = int(math.Floor(float64(rng) / float64(shards)))
-	}
-	for i := 0; i < shards; i++ {
-		start := i * rng
-		end := start + rng
-		if i == shards-1 {
-			end += remainder // add remainder to last core
+		var curBlocks []*BLOCK
+		var txIndex []*BlockTx
+		if curBlocks, txIndex, err = bp.loadBlocks(bufio.NewReader(fs), network); err != nil {
+			log.Println("Error loading block database")
+			_ = fs.Close()
+			return
+		} else {
+			log.Printf("BLOCK db file loaded: %s\n", path)
+			_ = fs.Close()
 		}
-		go bp.processTxShard(start, end, &wg)
+
+		// Update the tx index
+		bp.mu.Lock()
+		for _, txi := range txIndex {
+			bp.txIndex[*txi.OutP] = txi
+		}
+		bp.mu.Unlock()
+
+		// Sort blocks by time ascending
+		sort.Slice(curBlocks, func(i, j int) bool {
+			return curBlocks[i].Block().Header.Timestamp.Unix() < curBlocks[j].Block().Header.Timestamp.Unix()
+		})
+
+		// Process transactions, spawn goroutines to process all current blocks
+		// Use a multiplier of num cpu as a starting point, let go scheduler fill
+		// in work.
+		blocksLen := len(curBlocks)
+		shards, rng, remainder := shardsData(runtime.NumCPU()*4, blocksLen)
+		var wg sync.WaitGroup
+		wg.Add(shards)
+		for i := 0; i < shards; i++ {
+			start, end := shardsIter(shards, i, rng, remainder)
+			go bp.processTxShard(curBlocks, start, end, cfg, &wg)
+		}
+		wg.Wait()
 	}
 
-	wg.Wait()
-	log.Println("done")
-
+	bp.ClearIndex()
 	bp.setReady()
 	return
 }
@@ -232,11 +205,13 @@ func (bp *BLOCKPlugin) ListTransactions(fromTime, toTime int64, addresses []stri
 }
 
 // LoadBlocks loads block from the reader.
-func (bp *BLOCKPlugin) loadBlocks(sc *bufio.Reader, network []byte) (blocks []*BLOCK, err error) {
+func (bp *BLOCKPlugin) loadBlocks(sc *bufio.Reader, network []byte) (blocks []*BLOCK, txIndex []*BlockTx, err error) {
 	for err == nil && sc.Size() > 80 {
 		var b byte
 		if b, err = sc.ReadByte(); err != nil {
-			log.Println("failed to read byte", err.Error())
+			if err != io.EOF {
+				log.Println("failed to read byte", err.Error())
+			}
 			break
 		}
 
@@ -259,21 +234,49 @@ func (bp *BLOCKPlugin) loadBlocks(sc *bufio.Reader, network []byte) (blocks []*B
 			continue
 		}
 
-		// Current position
-		var wireBlock *wire.MsgBlock
-		var bytesNotRead int // block size
-		var err2 error
-		if wireBlock, bytesNotRead, err2 = bp.readBlock(sc); err2 != nil {
-			log.Println("failed to read block", err2.Error())
-			// Skip bytes
-			if bytesNotRead > 0 {
-				_, _ = sc.Discard(bytesNotRead)
+		// read the block size
+		sizeBytes := make([]byte, 4)
+		if _, err = io.ReadFull(sc, sizeBytes); err != nil {
+			log.Println("failed to read block size", err.Error())
+			continue
+		}
+		size := int(binary.LittleEndian.Uint32(sizeBytes))
+
+		// copy block bytes into buffer for processing later
+		blockBytes := make([]byte, size)
+		if n, err2 := io.ReadFull(sc, blockBytes); err2 != nil {
+			if err2 == io.EOF {
+				break
+			}
+			log.Println("failed to copy block bytes", err2.Error())
+			if size-n > 0 { // Skip bytes
+				_, _ = sc.Discard(size - n)
 			}
 			continue
 		}
 
+		var wireBlock *wire.MsgBlock
+		var bytesNotRead int // block size
+		var err2 error
+		if wireBlock, bytesNotRead, err2 = bp.readBlock(bytes.NewReader(blockBytes)); err2 != nil {
+			log.Println("failed to read block", err2.Error())
+			if bytesNotRead > 0 { // Skip bytes
+				_, _ = sc.Discard(bytesNotRead)
+			}
+			continue
+		}
 		block := newBlocknetBlock(wireBlock)
 		blocks = append(blocks, block)
+		for _, tx := range wireBlock.Transactions {
+			for n := range tx.TxOut {
+				txHash := tx.TxHash()
+				outp := wire.NewOutPoint(&txHash, uint32(n))
+				txIndex = append(txIndex, &BlockTx{
+					OutP:        outp,
+					Transaction: tx,
+				})
+			}
+		}
 	}
 
 	if err == io.EOF { // not fatal
@@ -284,31 +287,16 @@ func (bp *BLOCKPlugin) loadBlocks(sc *bufio.Reader, network []byte) (blocks []*B
 }
 
 // readBlock deserializes bytes into block data.
-func (bp *BLOCKPlugin) readBlock(sc *bufio.Reader) (block *wire.MsgBlock, size int, err error) {
-	// read the block size
-	sizeBytes := make([]byte, 4)
-	if _, err = io.ReadFull(sc, sizeBytes); err != nil {
-		log.Println("failed to read block size", err.Error())
-		size = len(sizeBytes)
-		return
-	}
-	size = int(binary.LittleEndian.Uint32(sizeBytes))
-
-	// buffer for block bytes
-	blockBytes := make([]byte, size)
-	if _, err = io.ReadFull(sc, blockBytes); err != nil {
-		log.Println("failed to read block bytes", err.Error())
-		return
-	}
-	size = 0 // at this point all block bytes were read
-
-	buf := bytes.NewReader(blockBytes)
+func (bp *BLOCKPlugin) readBlock(buf io.ReadSeeker) (block *wire.MsgBlock, size int, err error) {
 	var header *wire.BlockHeader
 	if header, err = bp.readBlockHeader(buf); err != nil {
 		log.Println("failed to read block header", err.Error())
 		return
 	}
-	block = wire.NewMsgBlock(header)
+	block = &wire.MsgBlock{
+		Header:       *header,
+		Transactions: []*wire.MsgTx{},
+	}
 
 	// Deserialize transactions
 	var txLen uint64
@@ -393,8 +381,6 @@ func (bp *BLOCKPlugin) readBlock(sc *bufio.Reader) (block *wire.MsgBlock, size i
 			}
 		}
 
-		// TODO Handle witness marker flags
-
 		// Locktime
 		txLockTimeB := make([]byte, 4)
 		if _, err = io.ReadFull(buf, txLockTimeB); err != nil {
@@ -403,10 +389,12 @@ func (bp *BLOCKPlugin) readBlock(sc *bufio.Reader) (block *wire.MsgBlock, size i
 		}
 		txLockTime := binary.LittleEndian.Uint32(txLockTimeB)
 
-		tx := wire.NewMsgTx(int32(txVersion))
-		tx.TxIn = vins
-		tx.TxOut = vouts
-		tx.LockTime = txLockTime
+		tx := &wire.MsgTx{
+			Version:  int32(txVersion),
+			TxIn:     vins,
+			TxOut:    vouts,
+			LockTime: txLockTime,
+		}
 		block.Transactions = append(block.Transactions, tx)
 	}
 
@@ -414,7 +402,7 @@ func (bp *BLOCKPlugin) readBlock(sc *bufio.Reader) (block *wire.MsgBlock, size i
 }
 
 // readBlockHeader deserializes block header.
-func (bp *BLOCKPlugin) readBlockHeader(buf *bytes.Reader) (header *wire.BlockHeader, err error) {
+func (bp *BLOCKPlugin) readBlockHeader(buf io.ReadSeeker) (header *wire.BlockHeader, err error) {
 	versionB := make([]byte, 4)
 	prevBlockB := make([]byte, 32)
 	merkleB := make([]byte, 32)
@@ -478,14 +466,13 @@ func (bp *BLOCKPlugin) setReady() {
 // processTxShard processes all transactions over specified range of blocks.
 // Creates all send and receive transactions in the range. This func is
 // thread safe.
-func (bp *BLOCKPlugin) processTxShard(start int, end int, wg *sync.WaitGroup) {
+func (bp *BLOCKPlugin) processTxShard(blocks []*BLOCK, start, end int, cfg *chaincfg.Params, wg *sync.WaitGroup) {
 	var cacheSendTxs []*Tx
 	var cacheReceiveTxs []*Tx
 
 	bp.mu.RLock()
 	for i := start; i < end; i++ {
-		var bloc *BLOCK
-		bloc = bp.blocks[i]
+		bloc := blocks[i]
 		for _, tx := range bloc.Block().Transactions {
 			txHash := tx.TxHash()
 			txHashStr := txHash.String()
@@ -503,7 +490,7 @@ func (bp *BLOCKPlugin) processTxShard(start int, end int, wg *sync.WaitGroup) {
 				blockhash := bloc.Hash()
 				outp := &vin.PreviousOutPoint
 				cacheSendTxs = append(cacheSendTxs, extractTxs(scriptPk, txHashStr, -1, amount,
-					bloc.Block().Header.Timestamp, confirmations, "send", &blockhash, outp)...)
+					bloc.Block().Header.Timestamp, confirmations, "send", &blockhash, outp, cfg)...)
 			}
 
 			// Receive category
@@ -514,7 +501,7 @@ func (bp *BLOCKPlugin) processTxShard(start int, end int, wg *sync.WaitGroup) {
 				blockhash := bloc.Hash()
 				outp := wire.NewOutPoint(&txHash, uint32(i))
 				cacheReceiveTxs = append(cacheReceiveTxs, extractTxs(scriptPk, txHashStr, i, amount,
-					bloc.Block().Header.Timestamp, confirmations, "receive", &blockhash, outp)...)
+					bloc.Block().Header.Timestamp, confirmations, "receive", &blockhash, outp, cfg)...)
 			}
 		}
 	}
@@ -522,7 +509,7 @@ func (bp *BLOCKPlugin) processTxShard(start int, end int, wg *sync.WaitGroup) {
 
 	bp.mu.Lock()
 	// Sends
-	for _, cacheTx := range cacheReceiveTxs {
+	for _, cacheTx := range cacheSendTxs {
 		addAddrToCache(bp.txCache, cacheTx)
 	}
 
@@ -552,11 +539,11 @@ func addAddrToCache(txCache map[string]map[string]*Tx, tx *Tx) {
 }
 
 // extractTxs derives transactions from scriptPubKey.
-func extractTxs(scriptPk []byte, txHash string, txVout int, amount float64, time2 time.Time, confirmations int,
-	category string, blockHash *chainhash.Hash, outp *wire.OutPoint) (txs []*Tx) {
+func extractTxs(scriptPk []byte, txHash string, txVout int, amount float64, blockTime time.Time, confirmations int,
+	category string, blockHash *chainhash.Hash, outp *wire.OutPoint, cfg *chaincfg.Params) (txs []*Tx) {
 	var addrs []btcutil.Address
 	var err error
-	if _, addrs, _, err = txscript.ExtractPkScriptAddrs(scriptPk, &chaincfg.MainNetParams); err != nil {
+	if _, addrs, _, err = txscript.ExtractPkScriptAddrs(scriptPk, cfg); err != nil {
 		return
 	}
 	// TODO Support additional address types (bech32, p2sh)
@@ -573,10 +560,10 @@ func extractTxs(scriptPk []byte, txHash string, txVout int, amount float64, time
 				Address:       address,
 				Category:      category,
 				Amount:        amount,
-				Time:          time2.Unix(),
+				Time:          blockTime.Unix(),
 				Confirmations: uint32(confirmations), // TODO Confirmations
-				Blockhash:     *blockHash,
-				OutP:          *outp,
+				Blockhash:     blockHash,
+				OutP:          outp,
 			}
 			txs = append(txs, cacheTx)
 		}
@@ -590,7 +577,6 @@ func NewBLOCKPlugin(blocksDir string) BlockLoader {
 		blocksDir: blocksDir,
 		isReady:   false,
 		network:   wire.MainNet,
-		blocks:    []*BLOCK{},
 		txCache:   make(map[string]map[string]*Tx),
 		txIndex:   make(map[wire.OutPoint]*BlockTx),
 	}

@@ -1,13 +1,14 @@
 package listtransactions
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"io"
 	"log"
+	"math"
 	"os"
 )
 
@@ -21,20 +22,21 @@ type BlockInterface interface {
 type BlockLoader interface {
 	BlocksDir() string
 	Ready() bool
-	LoadBlocks(blocksDir string) error
+	ClearIndex()
+	LoadBlocks(blocksDir string, cfg *chaincfg.Params) error
 	ListTransactions(fromTime, toTime int64, addresses []string) ([]*Tx, error)
 }
 
 type Tx struct {
-	Txid          string         `json:"txid"`
-	Vout          int32          `json:"n"`
-	Address       string         `json:"address"`
-	Category      string         `json:"category"` // send, receive
-	Amount        float64        `json:"amount"`
-	Time          int64          `json:"time"`
-	Confirmations uint32         `json:"confirmations"`
-	Blockhash     chainhash.Hash `json:"-"`
-	OutP          wire.OutPoint  `json:"-"`
+	Txid          string          `json:"txid"`
+	Vout          int32           `json:"n"`
+	Address       string          `json:"address"`
+	Category      string          `json:"category"` // send, receive
+	Amount        float64         `json:"amount"`
+	Time          int64           `json:"time"`
+	Confirmations uint32          `json:"confirmations"`
+	Blockhash     *chainhash.Hash `json:"-"`
+	OutP          *wire.OutPoint  `json:"-"`
 }
 
 func (tx *Tx) Key() string {
@@ -46,14 +48,14 @@ func (tx *Tx) KeyCategory(txid string, vout int32, category string) string {
 }
 
 type BlockTx struct {
-	Block       BlockInterface
+	OutP        *wire.OutPoint
 	Transaction *wire.MsgTx
 }
 
 // LoadPlugin opens the block database and loads block data.
 func LoadPlugin(plugin BlockLoader) (err error) {
 	log.Printf("Loading block database from '%s'", plugin.BlocksDir())
-	if err = plugin.LoadBlocks(plugin.BlocksDir()); err != nil {
+	if err = plugin.LoadBlocks(plugin.BlocksDir(), &chaincfg.MainNetParams); err != nil {
 		return
 	}
 	return nil
@@ -67,7 +69,7 @@ func networkLE(net wire.BitcoinNet) []byte {
 }
 
 // readVins deserializes tx vins.
-func readVins(buf *bytes.Reader) (vins []*wire.TxIn, txVinsLen uint64, err error) {
+func readVins(buf io.ReadSeeker) (vins []*wire.TxIn, txVinsLen uint64, err error) {
 	if txVinsLen, err = wire.ReadVarInt(buf, 0); err != nil {
 		log.Println("failed to read tx vin length", err.Error())
 		return
@@ -114,7 +116,7 @@ func readVins(buf *bytes.Reader) (vins []*wire.TxIn, txVinsLen uint64, err error
 }
 
 // readVouts deserializes tx vouts.
-func readVouts(buf *bytes.Reader) (vouts []*wire.TxOut, txVoutLen uint64, err error) {
+func readVouts(buf io.ReadSeeker) (vouts []*wire.TxOut, txVoutLen uint64, err error) {
 	if txVoutLen, err = wire.ReadVarInt(buf, 0); err != nil {
 		return
 	}
@@ -135,6 +137,34 @@ func readVouts(buf *bytes.Reader) (vouts []*wire.TxOut, txVoutLen uint64, err er
 			return
 		}
 		vouts = append(vouts, wire.NewTxOut(txValue, txScriptPubKeyB))
+	}
+	return
+}
+
+// shardsIter returns the iteration details for the current shard.
+func shardsIter(shards int, currentShard int, rng int, remainder int) (start, end int) {
+	start = currentShard * rng
+	end = start + rng
+	if currentShard == shards-1 {
+		end += remainder // add remainder to last core
+	}
+	return
+}
+
+// shardsData returns an optimal shard count, range, and remainder for the
+// desired shard count.
+func shardsData(desiredShards int, blocksLen int) (shards, rng, remainder int) {
+	shards = desiredShards
+	rng = blocksLen
+	remainder = 0
+	if shards > blocksLen {
+		shards = blocksLen
+	}
+	if rng > shards {
+		if rng%shards != 0 {
+			remainder = rng % shards
+		}
+		rng = int(math.Floor(float64(rng) / float64(shards)))
 	}
 	return
 }
