@@ -9,6 +9,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 )
@@ -46,6 +47,24 @@ func main() {
 	//	}
 	//}()
 
+	shutdown := make(chan os.Signal, 1)
+	go func() {
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt)
+	out:
+		for {
+			select {
+			case sig := <-c:
+				if sig == os.Interrupt {
+					log.Printf("Shutting down: received signal %v\n", sig)
+					data.ShutdownNow()
+					shutdown <- sig
+					break out
+				}
+			}
+		}
+	}()
+
 	dir, err := filepath.Abs(filepath.Dir(os.Args[0]))
 	if err != nil {
 		log.Fatal(err)
@@ -75,6 +94,17 @@ func main() {
 	// TODO Debug
 	//debugBLOCK(blockPlugin, &blockConfig)
 	//debugLTC(ltcPlugin, &ltcConfig)
+
+out:
+	for {
+		select {
+		case sig := <-shutdown:
+			if sig == os.Interrupt {
+				log.Println("Exiting...")
+				break out
+			}
+		}
+	}
 }
 
 func debugBLOCK(blockPlugin data.Plugin, config *data.Token) {
