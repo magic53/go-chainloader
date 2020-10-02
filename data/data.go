@@ -133,6 +133,15 @@ func TokenConfig(name string) (Token, error) {
 	}
 }
 
+// TokenConfigs returns all token configurations.
+func TokenConfigs() []Token {
+	var r []Token
+	for _, v := range registeredConfigs {
+		r = append(r, *v)
+	}
+	return r
+}
+
 // ProcessTransactions will process all transactions in blocks.
 func ProcessTransactions(plugin Plugin, blockTime time.Time, transactions []*wire.MsgTx, txIndex map[wire.OutPoint]*BlockTx) (sendTxs, receiveTxs []*Tx) {
 	blockhash := chainhash.Hash{} // TODO block.BlockHash()
@@ -542,12 +551,15 @@ func ShardsData(desiredShards int, blocksLen int) (shards, rng, remainder int) {
 	remainder = 0
 	if shards > blocksLen {
 		shards = blocksLen
+		rng = 1
 	}
 	if rng > shards {
-		if rng%shards != 0 {
-			remainder = rng % shards
+		rng = int(math.Floor(float64(blocksLen) / float64(shards)))
+		if blocksLen < shards*shards { // change shards to accommodate small amounts
+			rng = int(math.Ceil(float64(blocksLen) / float64(shards)))
+			shards = int(math.Floor(float64(blocksLen) / float64(rng)))
 		}
-		rng = int(math.Floor(float64(rng) / float64(shards)))
+		remainder = blocksLen % shards
 	}
 	return
 }
