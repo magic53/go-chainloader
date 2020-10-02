@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/blocknetdx/go-exrplugins/block"
 	"github.com/blocknetdx/go-exrplugins/data"
 	"github.com/blocknetdx/go-exrplugins/ltc"
 	"log"
@@ -18,8 +19,18 @@ func init() {
 }
 
 func main() {
+	var err error
+
 	// Trace
-	//_ = trace.Start(os.Stdout)
+	//f, err := os.Create("trace.out")
+	//if err != nil {
+	//	panic(err)
+	//}
+	//defer f.Close()
+	//err = trace.Start(f)
+	//if err != nil {
+	//	panic(err)
+	//}
 	//defer trace.Stop()
 
 	// Memory profiler
@@ -35,7 +46,6 @@ func main() {
 	//	}
 	//}()
 
-	var err error
 
 	dir, err := filepath.Abs(filepath.Dir(os.Args[0]))
 	if err != nil {
@@ -45,14 +55,14 @@ func main() {
 		log.Println("failed to load token configuration file: real time updates will be disabled")
 	}
 
-	//// load block blockConfig
-	//blockConfig, _ := data.TokenConfig("block")
-	//blockDir := "/opt/blockchain/block/data-bmainnet-goleveldb/blocks"
-	//blockPlugin := block.NewPlugin(&block.MainNetParams, blockDir, &blockConfig)
-	//if err = data.LoadBlocks(blockPlugin); err != nil {
-	//	log.Println("BLOCK failed!", err.Error())
-	//	return
-	//}
+	// load block blockConfig
+	blockConfig, _ := data.TokenConfig("block")
+	blockDir := "/opt/blockchain/block/data-bmainnet-goleveldb/blocks"
+	blockPlugin := block.NewPlugin(&block.MainNetParams, blockDir, &blockConfig)
+	if err = data.LoadBlocks(blockPlugin); err != nil {
+		log.Println("BLOCK failed!", err.Error())
+		return
+	}
 
 	// load block ltcConfig
 	ltcConfig, _ := data.TokenConfig("ltc")
@@ -65,7 +75,7 @@ func main() {
 
 	// TODO Debug
 	//debugBLOCK(blockPlugin, &blockConfig)
-	debugLTC(ltcPlugin, &ltcConfig)
+	//debugLTC(ltcPlugin, &ltcConfig)
 }
 
 func debugBLOCK(blockPlugin data.Plugin, config *data.Token) {
@@ -160,10 +170,7 @@ func debugLTC(ltcPlugin data.Plugin, config *data.Token) {
 	//	_, _ = ltcPlugin.ImportTransactions(rawtxs)
 	//}
 
-	txs, err := ltcPlugin.ListTransactions(0, math.MaxInt32, []string{
-		"MW9apF2Qn6eXkT5RBMNH6dRtaRTdmgGzJ8",
-		"MWm8DWekxw16BzwfRSyBvaU2cmt5gFAdZx", // block 1922810
-	})
+	txs, err := ltcPlugin.ListTransactions(0, math.MaxInt32, []string{"LV5nrreyVZJVvptA9PZSD4ViegKh7Qa8MA"})
 	if err != nil {
 		log.Println("LTC listtransactions failed!", err.Error())
 		return
