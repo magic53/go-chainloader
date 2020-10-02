@@ -5,9 +5,11 @@ blockchain:
     rpcuser: test
     rpcpass: testAbc
     segwitactivated: 1584537260
+    blocksdir: "/opt/blockchain/block/data-bmainnet-goleveldb/blocks"
   ltc:
     rpchost: localhost
     rpcport: 9332
     rpcuser: test
     rpcpass: testAbc
     segwitactivated: 1494432226
+    blocksdir: "/opt/blockchain/ltc/litecoin0/data/blocks"

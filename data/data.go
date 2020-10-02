@@ -103,7 +103,7 @@ func LoadTokenConfigs(path string) bool {
 		return false
 	}
 	for chain, tokencfg := range config.Blockchain {
-		registeredConfigs[chain] = &tokencfg
+		registeredConfigs[chain] = tokencfg
 	}
 	return true
 }

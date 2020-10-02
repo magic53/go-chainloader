@@ -46,7 +46,6 @@ func main() {
 	//	}
 	//}()
 
-
 	dir, err := filepath.Abs(filepath.Dir(os.Args[0]))
 	if err != nil {
 		log.Fatal(err)
@@ -57,7 +56,7 @@ func main() {
 
 	// load block blockConfig
 	blockConfig, _ := data.TokenConfig("block")
-	blockDir := "/opt/blockchain/block/data-bmainnet-goleveldb/blocks"
+	blockDir := blockConfig.BlocksDir
 	blockPlugin := block.NewPlugin(&block.MainNetParams, blockDir, &blockConfig)
 	if err = data.LoadBlocks(blockPlugin); err != nil {
 		log.Println("BLOCK failed!", err.Error())
@@ -66,7 +65,7 @@ func main() {
 
 	// load block ltcConfig
 	ltcConfig, _ := data.TokenConfig("ltc")
-	ltcDir := "/opt/blockchain/ltc/litecoin0/data/blocks"
+	ltcDir := ltcConfig.BlocksDir
 	ltcPlugin := ltc.NewPlugin(&ltc.MainNetParams, ltcDir, &ltcConfig)
 	if err = data.LoadBlocks(ltcPlugin); err != nil {
 		log.Println("LTC failed!", err.Error())

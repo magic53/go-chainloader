@@ -4,7 +4,7 @@ import "fmt"
 
 // Config describes the default configuration file format.
 type Config struct {
-	Blockchain map[string]Token `yaml:"blockchain"`
+	Blockchain map[string]*Token `yaml:"blockchain"`
 }
 
 type Token struct {
@@ -13,6 +13,7 @@ type Token struct {
 	RPCUser         string `yaml:"rpcuser"`
 	RPCPass         string `yaml:"rpcpass"`
 	SegwitActivated int64  `yaml:"segwitactivated"`
+	BlocksDir       string `yaml:"blocksdir"`
 }
 
 func (t *Token) RPCHttp() string {
