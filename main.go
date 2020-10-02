@@ -3,8 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/blocknetdx/go-exrplugins/block"
 	"github.com/blocknetdx/go-exrplugins/data"
+	"github.com/blocknetdx/go-exrplugins/ltc"
 	"log"
 	"math"
 	"os"
@@ -45,22 +45,30 @@ func main() {
 		log.Println("failed to load token configuration file: real time updates will be disabled")
 	}
 
-	// load block blockConfig
-	blockConfig, _ := data.TokenConfig("block")
-	blockDir := "/opt/blockchain/block/data-bmainnet-goleveldb/blocks"
-	blockPlugin := block.NewPlugin(&block.MainNetParams, blockDir, &blockConfig)
-	if err = data.LoadBlocks(blockPlugin); err != nil {
-		log.Println("BLOCK failed!", err.Error())
+	//// load block blockConfig
+	//blockConfig, _ := data.TokenConfig("block")
+	//blockDir := "/opt/blockchain/block/data-bmainnet-goleveldb/blocks"
+	//blockPlugin := block.NewPlugin(&block.MainNetParams, blockDir, &blockConfig)
+	//if err = data.LoadBlocks(blockPlugin); err != nil {
+	//	log.Println("BLOCK failed!", err.Error())
+	//	return
+	//}
+
+	// load block ltcConfig
+	ltcConfig, _ := data.TokenConfig("ltc")
+	ltcDir := "/opt/blockchain/ltc/litecoin0/data/blocks"
+	ltcPlugin := ltc.NewPlugin(&ltc.MainNetParams, ltcDir, &ltcConfig)
+	if err = data.LoadBlocks(ltcPlugin); err != nil {
+		log.Println("LTC failed!", err.Error())
 		return
 	}
 
 	// TODO Debug
-	debug(blockPlugin, &blockConfig)
-
-	// TODO ltcPlugin := listtransactions.NewLTCPlugin(ltcDir)
+	//debugBLOCK(blockPlugin, &blockConfig)
+	debugLTC(ltcPlugin, &ltcConfig)
 }
 
-func debug(blockPlugin data.Plugin, config *data.Token) {
+func debugBLOCK(blockPlugin data.Plugin, config *data.Token) {
 	var err error
 	var txids []string
 	txids, err = data.RPCRawMempool(config)
@@ -93,6 +101,71 @@ func debug(blockPlugin data.Plugin, config *data.Token) {
 	txs, err := blockPlugin.ListTransactions(0, math.MaxInt32, []string{"BreP7JHmYfp9YaGXBwN1F2X9BRq9sRdkiS"})
 	if err != nil {
 		log.Println("BLOCK listtransactions failed!", err.Error())
+		return
+	}
+	sort.Slice(txs, func(i, j int) bool {
+		return txs[i].Time < txs[j].Time
+	})
+	if js, err2 := json.Marshal(txs); err2 == nil {
+		fmt.Println(string(js))
+	}
+}
+
+func debugLTC(ltcPlugin data.Plugin, config *data.Token) {
+	var err error
+	//var txids []string
+	//txids, err = data.RPCRawMempool(config)
+	//if err != nil {
+	//	fmt.Println(err.Error())
+	//}
+	//// block 1922810
+	//txids = []string{
+	//	"645569e5ba9fd384dee3e19602cf5d4f81fc963c766def0f3fafd6afb5d6402b",
+	//	"4e7178a1b6345230c6d47fa2b69a8300afd68668a94896606f066f697062d37b",
+	//	"0afd7828844e12de18d4160281b27573bf54a676bf65bb8cfd2e79ccb474711b",
+	//	"d19ed1aa14280693933a9c9e552ed7a294e537413e24780ddf9f865dde90546f",
+	//	"eee223b6f6624ac079259fd379499513e6ac1440c68ddd1e20b91850fba66d22",
+	//	"d2fad87261dcb381883e51953bbf7800ad02186180423a3138547296c165f0cd",
+	//	"760f9f3385a0ada632c750f4603867504bdcda7be245b0b99de7bd065c27d5a3",
+	//	"754421493b42ae1c2940b307d489b59c7bbdcb88d3535464b65519a997ca21a2",
+	//	"e1ae5692f3b1189f4e38b9e0c8544d300fe83a4f1d40f524efec50e369b37901",
+	//	"e0df0fd5f9b2c046ed754585ce45947753e79389272acff70c8cc9a094424db8",
+	//	"8c7e73110c6a1d010d71221ffc35e32d14bd28d02ea8cec689f67e3a669045e6",
+	//	"37294c514341cf787750d75d7ae4d4e7876cb355f8795f3ddd134df0f4910e07",
+	//	"825de0fde9d159889dc3d2ac807cf39e6a4a3dfd7fbe9a3ebbc3d32271446eff",
+	//	"49e64ab1747bffb08d6c61686588aa4bfe77a9b7015b4a45e03ed7385ad9d626",
+	//	"fd1af7fed0f3aced908ec80355e5526152b05cad0973fff141ef7ad812b6a21c",
+	//	"c549e50815c45e85092b2fa4c18706a54d2bcdfb515e1b921972e2e7d245542b",
+	//	"0094b803cfac6f159d0cfe0cec80c7b658b28b8f41e71eb424b5380cb09475fc",
+	//	"b0d59afccfd659b24bf72388263a71ea97e3c627171d32e31de35e95d14a0b27",
+	//	"d62543ebe94d4de95bf037bd345782dd040f93fe95d7aa034661e5ca75c7e934",
+	//	"4ee5dfd35dcf4920b5336f52cdd0402105e2099c5151f4ac932c62d91cf88037",
+	//	"3061ab123835eb2fc68cd160c6c99e0f698512eec09e4c0b813a7af64d8f1b71",
+	//	"1de4cf2323a6adda6a2616c5823bfffdea19731f29d252f691fe040a6f1cb877",
+	//	"b540af13a49cad742614fa88cdfdf4ccfcdd4af9998a10106ee4b0ad471316e3",
+	//	"0011e3e91dff7fca68a45386caf47e47bdc85fbc481ec694a5ab5c7b4e5cc19c",
+	//	"eb9cda055b183fb063f5f9091d6c134268f029f72d022fe0fbf9997ef7426aa4",
+	//	"9b46c4c4e65875780aebc31310621d96199ff3883a38eec08f1c9db5d2735aae",
+	//	"e7d3d7636a28b7b2874e7edb8e2f4af859b9d58be6206f13b088cce4ac66e0b4",
+	//	"e9bcafa9778ae022881fc42502b3e82a48664361472fad667b4e2686c0a8c6b5",
+	//	"e7119ff43b250e3452f1329976c6aa8266ca6fc06c7df16959875e36fa44bfc6",
+	//	"8d296fab683661b8b01552283d872bda80a9a43042172597f5618349eb6ecbc6",
+	//	"50f8f6d82fac6c7f3b5a18a3a8e49d8211424b15e773556928b7872c76d5cdd6",
+	//	"4b664a73e42cb6b72937abb6871c894a6a08957901f868534d56800dca8eefee",
+	//	"907499cfd9752cd2e5caa2ce022f8942e7498be9d4abec429d4a6492f8a0a8f5",
+	//}
+	//if rawtxs, err := data.RPCGetRawTransactions(ltcPlugin, txids, config); err != nil {
+	//	fmt.Println(err.Error())
+	//} else {
+	//	_, _ = ltcPlugin.ImportTransactions(rawtxs)
+	//}
+
+	txs, err := ltcPlugin.ListTransactions(0, math.MaxInt32, []string{
+		"MW9apF2Qn6eXkT5RBMNH6dRtaRTdmgGzJ8",
+		"MWm8DWekxw16BzwfRSyBvaU2cmt5gFAdZx", // block 1922810
+	})
+	if err != nil {
+		log.Println("LTC listtransactions failed!", err.Error())
 		return
 	}
 	sort.Slice(txs, func(i, j int) bool {

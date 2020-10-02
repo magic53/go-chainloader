@@ -5,3 +5,9 @@ blockchain:
     rpcuser: test
     rpcpass: testAbc
     segwitactivated: 1584537260
+  ltc:
+    rpchost: localhost
+    rpcport: 9332
+    rpcuser: test
+    rpcpass: testAbc
+    segwitactivated: 1494432226
