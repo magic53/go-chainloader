@@ -1,10 +1,8 @@
-package ltc
+package data
 
-import (
-	"github.com/blocknetdx/go-exrplugins/data"
-)
-
-func (bp *Plugin) ListTransactions(fromTime, toTime int64, addresses []string) (txs []*data.Tx, err error) {
+// ListTransactions returns all transactions over the time period that are associated
+// with the specified addresses.
+func (bp *ChainPlugin) ListTransactions(fromTime, toTime int64, addresses []string) (txs []*Tx, err error) {
 	bp.mu.RLock()
 	defer bp.mu.RUnlock()
 	for _, address := range addresses {

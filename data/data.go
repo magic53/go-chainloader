@@ -39,17 +39,21 @@ type Block interface {
 	setHash(hash chainhash.Hash)
 }
 
+type BlockReader interface {
+	SegwitActivated() int64
+	ReadBlock(buf io.ReadSeeker) (*wire.MsgBlock, error)
+	ReadBlockHeader(buf io.ReadSeeker) (*wire.BlockHeader, error)
+	ReadTransaction(buf io.ReadSeeker) (*wire.MsgTx, error)
+}
+
 type Plugin interface {
+	BlockReader
 	BlocksDir() string
 	Ready() bool
 	Network() wire.BitcoinNet
 	Config() chaincfg.Params
 	ClearIndex()
-	SegwitActivated() int64
 	LoadBlocks(blocksDir string) error
-	ReadBlock(buf io.ReadSeeker) (*wire.MsgBlock, error)
-	ReadBlockHeader(buf io.ReadSeeker) (*wire.BlockHeader, error)
-	ReadTransaction(buf io.ReadSeeker) (*wire.MsgTx, error)
 	AddBlocks(blocks []byte) ([]*Tx, error)
 	ImportTransactions(transactions []*wire.MsgTx) ([]*Tx, error)
 	ListTransactions(fromTime, toTime int64, addresses []string) ([]*Tx, error)
@@ -80,12 +84,12 @@ type BlockTx struct {
 	Transaction *wire.MsgTx
 }
 
-// Shutdown starts the shutdown process.
+// Shutdown starts the shutdown process. Thread safe.
 func ShutdownNow() {
 	atomic.StoreInt32(&shutdownInProgress, 1)
 }
 
-// IsShuttingDown returns true if shutdown was requested.
+// IsShuttingDown returns true if shutdown was requested. Thread safe.
 func IsShuttingDown() bool {
 	return atomic.LoadInt32(&shutdownInProgress) == 1
 }
@@ -307,6 +311,11 @@ func ReadVins(buf io.ReadSeeker) (vins []*wire.TxIn, txVinsLen uint64, err error
 		// ScriptSig
 		var txScriptLen uint64
 		txScriptLen, _ = wire.ReadVarInt(buf, 0) // non-fatal
+		if txScriptLen > 1024 {
+			err = errors.New("failed to read script sig, bad length")
+			log.Println(err.Error())
+			return
+		}
 		txScriptSigB := make([]byte, txScriptLen)
 		_, _ = io.ReadFull(buf, txScriptSigB) // non-fatal
 

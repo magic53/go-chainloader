@@ -9,6 +9,7 @@ func TestConfig(t *testing.T) {
 	yml := []byte(
 		  "blockchain:" +
 		"\n  block:" +
+		"\n    ticker: BLOCK" +
 		"\n    rpchost: localhost" +
 		"\n    rpcport: 41414" +
 		"\n    rpcuser: test" +
@@ -16,6 +17,7 @@ func TestConfig(t *testing.T) {
 	    "\n    segwitactivated: 12345" +
 		"\n    blocksdir: /opt/blockchain/block" +
 		"\n  btc:" +
+		"\n    ticker: BTC" +
 		"\n    rpchost: localhost" +
 		"\n    rpcport: 8332" +
 		"\n    rpcuser: test1" +
@@ -26,6 +28,9 @@ func TestConfig(t *testing.T) {
 	var config Config
 	if err := yaml.Unmarshal(yml, &config); err != nil {
 		t.Errorf("failed to unmarshall yml %s", err.Error())
+	}
+	if config.Blockchain["block"].Ticker != "BLOCK" {
+		t.Error("expecting BLOCK")
 	}
 	if config.Blockchain["block"].RPCHost != "localhost" {
 		t.Error("expecting rpchost=localhost")
@@ -47,6 +52,9 @@ func TestConfig(t *testing.T) {
 	}
 	if config.Blockchain["block"].RPCHttp() != "http://localhost:41414/" {
 		t.Error("expecting http://localhost:41414/")
+	}
+	if config.Blockchain["btc"].Ticker != "BTC" {
+		t.Error("expecting BTC")
 	}
 	if config.Blockchain["btc"].RPCHost != "localhost" {
 		t.Error("expecting rpchost=localhost")

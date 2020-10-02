@@ -8,6 +8,7 @@ type Config struct {
 }
 
 type Token struct {
+	Ticker          string `yaml:"ticker"`
 	RPCHost         string `yaml:"rpchost"`
 	RPCPort         int    `yaml:"rpcport"`
 	RPCUser         string `yaml:"rpcuser"`
