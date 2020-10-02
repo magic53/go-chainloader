@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/blocknetdx/go-exrplugins/block"
+	"github.com/blocknetdx/go-exrplugins/btc"
 	"github.com/blocknetdx/go-exrplugins/data"
 	"github.com/blocknetdx/go-exrplugins/ltc"
 	"log"
@@ -73,27 +74,37 @@ func main() {
 		log.Println("failed to load token configuration file: real time updates will be disabled")
 	}
 
-	// load block blockConfig
-	blockConfig, _ := data.TokenConfig("block")
-	blockDir := blockConfig.BlocksDir
-	blockPlugin := block.NewPlugin(&block.MainNetParams, blockDir, &blockConfig)
-	if err = data.LoadBlocks(blockPlugin); err != nil {
-		log.Println("BLOCK failed!", err.Error())
-		return
-	}
-
-	// load block ltcConfig
-	ltcConfig, _ := data.TokenConfig("ltc")
-	ltcDir := ltcConfig.BlocksDir
-	ltcPlugin := ltc.NewPlugin(&ltc.MainNetParams, ltcDir, &ltcConfig)
-	if err = data.LoadBlocks(ltcPlugin); err != nil {
-		log.Println("LTC failed!", err.Error())
-		return
+	tokens := data.TokenConfigs()
+	for _, config := range tokens {
+		switch config.Ticker {
+		case "BLOCK":
+			// load block config
+			blockPlugin := block.NewPlugin(&block.MainNetParams, config.BlocksDir, &config)
+			if err = data.LoadBlocks(blockPlugin); err != nil {
+				log.Println("BLOCK failed!", err.Error())
+				return
+			}
+		case "LTC":
+			// load ltc config
+			ltcPlugin := ltc.NewPlugin(&ltc.MainNetParams, config.BlocksDir, &config)
+			if err = data.LoadBlocks(ltcPlugin); err != nil {
+				log.Println("LTC failed!", err.Error())
+				return
+			}
+		case "BTC":
+			// load btc config
+			btcPlugin := btc.NewPlugin(&btc.MainNetParams, config.BlocksDir, &config)
+			if err = data.LoadBlocks(btcPlugin); err != nil {
+				log.Println("BTC failed!", err.Error())
+				return
+			}
+		}
 	}
 
 	// TODO Debug
 	//debugBLOCK(blockPlugin, &blockConfig)
 	//debugLTC(ltcPlugin, &ltcConfig)
+	//debugBTC(btcPlugin, &btcConfig)
 
 out:
 	for {
@@ -202,6 +213,35 @@ func debugLTC(ltcPlugin data.Plugin, config *data.Token) {
 	txs, err := ltcPlugin.ListTransactions(0, math.MaxInt32, []string{"LV5nrreyVZJVvptA9PZSD4ViegKh7Qa8MA"})
 	if err != nil {
 		log.Println("LTC listtransactions failed!", err.Error())
+		return
+	}
+	sort.Slice(txs, func(i, j int) bool {
+		return txs[i].Time < txs[j].Time
+	})
+	if js, err2 := json.Marshal(txs); err2 == nil {
+		fmt.Println(string(js))
+	}
+}
+
+func debugBTC(btcPlugin data.Plugin, config *data.Token) {
+	var err error
+	//var txids []string
+	//txids, err = data.RPCRawMempool(config)
+	//if err != nil {
+	//	fmt.Println(err.Error())
+	//}
+	//// block 1922810
+	//txids = []string{
+	//}
+	//if rawtxs, err := data.RPCGetRawTransactions(ltcPlugin, txids, config); err != nil {
+	//	fmt.Println(err.Error())
+	//} else {
+	//	_, _ = ltcPlugin.ImportTransactions(rawtxs)
+	//}
+
+	txs, err := btcPlugin.ListTransactions(0, math.MaxInt32, []string{"1F184JoctgpLnTQmABig3sJNG6QqkG9JuL"})
+	if err != nil {
+		log.Println("BTC listtransactions failed!", err.Error())
 		return
 	}
 	sort.Slice(txs, func(i, j int) bool {
