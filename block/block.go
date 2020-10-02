@@ -95,7 +95,7 @@ func (bp *Plugin) LoadBlocks(blocksDir string) (err error) {
 }
 
 // LoadBlocks loads block from the reader.
-func (bp *Plugin) loadBlocks(sc *bufio.Reader, network []byte) (blocks []*BLOCK, txIndex []*data.BlockTx, err error) {
+func (bp *Plugin) loadBlocks(sc *bufio.Reader, network []byte) (blocks []*BLOCK, err error) {
 	_, err = data.NextBlock(sc, network, func(blockBytes []byte) bool {
 		var wireBlock *wire.MsgBlock
 		var err2 error
@@ -105,16 +105,6 @@ func (bp *Plugin) loadBlocks(sc *bufio.Reader, network []byte) (blocks []*BLOCK,
 		}
 		block := newBlocknetBlock(wireBlock)
 		blocks = append(blocks, block)
-		for _, tx := range wireBlock.Transactions {
-			for n := range tx.TxOut {
-				txHash := tx.TxHash()
-				outp := wire.NewOutPoint(&txHash, uint32(n))
-				txIndex = append(txIndex, &data.BlockTx{
-					OutP:        outp,
-					Transaction: tx,
-				})
-			}
-		}
 		return true
 	})
 
@@ -188,11 +178,42 @@ func (bp *Plugin) setReady() {
 // processBlocks will process all blocks in the buffer.
 func (bp *Plugin) processBlocks(sc *bufio.Reader) (txs []*data.Tx, err error) {
 	var blocks []*BLOCK
-	var txBlocks []*data.BlockTx
-	if blocks, txBlocks, err = bp.loadBlocks(sc, data.NetworkLE(bp.Network())); err != nil {
+	if blocks, err = bp.loadBlocks(sc, data.NetworkLE(bp.Network())); err != nil {
 		log.Println("Error loading block database")
 		return
 	}
+
+	// Produce block transaction index
+	var txBlocks []*data.BlockTx
+	blocksLen := len(blocks)
+	shards, rng, remainder := data.ShardsData(runtime.NumCPU()*4, blocksLen)
+	var wg sync.WaitGroup
+	wg.Add(shards)
+	mu := sync.Mutex{}
+	for i := 0; i < shards; i++ {
+		start, end := data.ShardsIter(shards, i, rng, remainder)
+		go func() {
+			var transactions []*data.BlockTx
+			for j := start; j < end; j++ {
+				wireBlock := blocks[j].Block()
+				for _, tx := range wireBlock.Transactions {
+					txHash := tx.TxHash()
+					for n := range tx.TxOut {
+						outp := wire.NewOutPoint(&txHash, uint32(n))
+						transactions = append(transactions, &data.BlockTx{
+							OutP:        outp,
+							Transaction: tx,
+						})
+					}
+				}
+			}
+			mu.Lock()
+			txBlocks = append(txBlocks, transactions...)
+			mu.Unlock()
+			wg.Done()
+		}()
+	}
+	wg.Wait()
 
 	// Update the tx index
 	bp.mu.Lock()
@@ -209,11 +230,9 @@ func (bp *Plugin) processBlocks(sc *bufio.Reader) (txs []*data.Tx, err error) {
 	// Process transactions, spawn goroutines to process all current blocks
 	// Use a multiplier of num cpu as a starting point, let go scheduler fill
 	// in work.
-	blocksLen := len(blocks)
-	shards, rng, remainder := data.ShardsData(runtime.NumCPU()*4, blocksLen)
-	var wg sync.WaitGroup
+	blocksLen = len(blocks)
+	shards, rng, remainder = data.ShardsData(runtime.NumCPU()*4, blocksLen)
 	wg.Add(shards)
-	mu := sync.Mutex{}
 	for i := 0; i < shards; i++ {
 		start, end := data.ShardsIter(shards, i, rng, remainder)
 		go func() {
