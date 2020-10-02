@@ -8,4 +8,5 @@ require (
 	github.com/decred/dcrd/lru v1.1.0 // indirect
 	github.com/kkdai/bstream v1.0.0 // indirect
 	golang.org/x/crypto v0.0.0-20200930160638-afb6bcd081ae // indirect
+	gopkg.in/yaml.v2 v2.2.1
 )

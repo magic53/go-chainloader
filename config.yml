@@ -1,0 +1,7 @@
+blockchain:
+  block:
+    rpchost: localhost
+    rpcport: 41414
+    rpcuser: test
+    rpcpass: testAbc
+    segwitactivated: 1584537260

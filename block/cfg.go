@@ -4,18 +4,6 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 )
 
-func init() {
-	if err := chaincfg.Register(&MainNetParams); err != nil {
-		panic(err)
-	}
-	if err := chaincfg.Register(&TestnetParams); err != nil {
-		panic(err)
-	}
-	if err := chaincfg.Register(&RegressionNetParams); err != nil {
-		panic(err)
-	}
-}
-
 // MainNetParams returns the chain configuration for mainnet.
 var MainNetParams = chaincfg.Params{
 	Name:        "mainnet",

@@ -4,18 +4,31 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
+	"gopkg.in/yaml.v2"
 	"io"
+	"io/ioutil"
 	"log"
 	"math"
+	"net/http"
 	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 )
+
+var registeredConfigs = map[string]*Token{}
 
 type Block interface {
 	Block() *wire.MsgBlock
@@ -30,10 +43,13 @@ type Plugin interface {
 	Network() wire.BitcoinNet
 	Config() chaincfg.Params
 	ClearIndex()
+	SegwitActivated() int64
 	LoadBlocks(blocksDir string) error
 	ReadBlock(buf io.ReadSeeker) (*wire.MsgBlock, error)
 	ReadBlockHeader(buf io.ReadSeeker) (*wire.BlockHeader, error)
+	ReadTransaction(buf io.ReadSeeker) (*wire.MsgTx, error)
 	AddBlocks(blocks []byte) ([]*Tx, error)
+	ImportTransactions(transactions []*wire.MsgTx) ([]*Tx, error)
 	ListTransactions(fromTime, toTime int64, addresses []string) ([]*Tx, error)
 }
 
@@ -62,8 +78,47 @@ type BlockTx struct {
 	Transaction *wire.MsgTx
 }
 
+// LoadTokenConfigs loads the token configurations at the specified path.
+func LoadTokenConfigs(path string) bool {
+	if filepath.Base(path) != "config.yml" && filepath.Base(path) != "config.yaml" {
+		path2 := filepath.Join(path, "config.yml")
+		if ok, err := FileExists(path2); !ok || err != nil {
+			path2 = filepath.Join(path, "config.yaml")
+			if ok, err := FileExists(path); !ok || err != nil {
+				return false
+			}
+		}
+		path = path2
+	} else if ok, err := FileExists(path); !ok || err != nil {
+		return false
+	}
+	b, err := ioutil.ReadFile(path)
+	if err != nil {
+		log.Printf("failed to read config file: %s\n", path)
+		return false
+	}
+	var config Config
+	if err := yaml.Unmarshal(b, &config); err != nil {
+		log.Printf("failed to read config file, bad format: %s\n", err.Error())
+		return false
+	}
+	for chain, tokencfg := range config.Blockchain {
+		registeredConfigs[chain] = &tokencfg
+	}
+	return true
+}
+
+// TokenConfig returns loaded token config with name.
+func TokenConfig(name string) (Token, error) {
+	if token, ok := registeredConfigs[name]; !ok {
+		return Token{}, errors.New("No config found with name " + name)
+	} else {
+		return *token, nil
+	}
+}
+
 // ProcessTransactions will process all transactions in blocks.
-func ProcessTransactions(plugin Plugin, block *wire.MsgBlock, transactions []*wire.MsgTx, txIndex map[wire.OutPoint]*BlockTx) (sendTxs, receiveTxs []*Tx) {
+func ProcessTransactions(plugin Plugin, blockTime time.Time, transactions []*wire.MsgTx, txIndex map[wire.OutPoint]*BlockTx) (sendTxs, receiveTxs []*Tx) {
 	blockhash := chainhash.Hash{} // TODO block.BlockHash()
 	cfg := plugin.Config()
 	for _, tx := range transactions {
@@ -83,7 +138,7 @@ func ProcessTransactions(plugin Plugin, block *wire.MsgBlock, transactions []*wi
 			blockhash := blockhash
 			outp := &vin.PreviousOutPoint
 			sendTxs = append(sendTxs, ExtractAddresses(scriptPk, txHashStr, -1, amount,
-				block.Header.Timestamp, confirmations, "send", &blockhash, outp, &cfg)...)
+				blockTime, confirmations, "send", &blockhash, outp, &cfg)...)
 		}
 
 		// Receive category
@@ -94,7 +149,7 @@ func ProcessTransactions(plugin Plugin, block *wire.MsgBlock, transactions []*wi
 			blockhash := blockhash
 			outp := wire.NewOutPoint(&txHash, uint32(i))
 			receiveTxs = append(receiveTxs, ExtractAddresses(scriptPk, txHashStr, i, amount,
-				block.Header.Timestamp, confirmations, "receive", &blockhash, outp, &cfg)...)
+				blockTime, confirmations, "receive", &blockhash, outp, &cfg)...)
 		}
 	}
 	return
@@ -133,13 +188,75 @@ func ExtractAddresses(scriptPk []byte, txHash string, txVout int, amount float64
 	return
 }
 
-// LoadPlugin opens the block database and loads block data.
-func LoadPlugin(plugin Plugin) (err error) {
+// LoadBlocks opens the block database and loads block data.
+func LoadBlocks(plugin Plugin) (err error) {
 	log.Printf("Loading block database from '%s'", plugin.BlocksDir())
 	if err = plugin.LoadBlocks(plugin.BlocksDir()); err != nil {
 		return
 	}
 	return nil
+}
+
+// BlockFiles finds suitable block files.
+func BlockFiles(blocksDir string, re *regexp.Regexp, limit int) (files []os.FileInfo, err error) {
+	exists := false
+	if exists, err = FileExists(blocksDir); err != nil || !exists {
+		if !exists {
+			err = errors.New(fmt.Sprintf("File doesn't exist: %s", blocksDir))
+		}
+		return
+	}
+
+	var fileInfos []os.FileInfo
+	if fileInfos, err = ioutil.ReadDir(blocksDir); err != nil {
+		return
+	}
+	if len(fileInfos) == 0 { // check if no block files
+		err = errors.New("BLOCK no db files found")
+		return
+	}
+
+	// Filter out all non blk files
+	for _, file := range fileInfos {
+		if !re.MatchString(file.Name()) {
+			continue
+		}
+		files = append(files, file)
+	}
+
+	// Sort most recent first
+	sort.Slice(files, func(a, b int) bool {
+		aName := files[a].Name()
+		bName := files[b].Name()
+		aMatches := re.FindStringSubmatch(aName)
+		if len(aMatches) < 1 {
+			return false
+		}
+		bMatches := re.FindStringSubmatch(bName)
+		if len(bMatches) < 1 {
+			return false
+		}
+		var err2 error
+		var ai int64
+		if ai, err2 = strconv.ParseInt(aMatches[1], 10, 64); err2 != nil {
+			return true
+		}
+		var bi int64
+		if bi, err2 = strconv.ParseInt(bMatches[1], 10, 64); err2 != nil {
+			return false
+		}
+		return ai > bi // sort descending
+	})
+
+	// Limit files returned
+	dats := limit
+	if dats <= len(files) {
+		files = files[:dats]
+	} else if dats < 0 {
+		files = files[:1]
+	}
+
+	return
 }
 
 // NetworkLE returns the little endian byte representation of the network magic number.
@@ -238,93 +355,9 @@ func ReadBlock(buf io.ReadSeeker, header *wire.BlockHeader, witnessTime int64) (
 
 	// Iterate over all transactions
 	for i := 0; i < int(txLen); i++ {
-		var vins []*wire.TxIn
-		var vouts []*wire.TxOut
-
-		txVersionB := make([]byte, 4)
-		if _, err = io.ReadFull(buf, txVersionB); err != nil {
-			log.Println("failed to read tx version", err.Error())
+		var tx *wire.MsgTx
+		if tx, err = ReadTransaction(buf, block.Header.Timestamp.Unix() >= witnessTime); err != nil {
 			return
-		}
-		txVersion := binary.LittleEndian.Uint32(txVersionB)
-
-		txAllowWitness := header.Timestamp.Unix() >= witnessTime
-		if txAllowWitness {
-			txWitnessMarker := make([]byte, 2)
-			if _, err = io.ReadFull(buf, txWitnessMarker); err != nil {
-				log.Println("failed to read tx vins witness marker", err.Error())
-				return
-			}
-			if bytes.Equal(txWitnessMarker, []byte{0x0, 0x1}) {
-				var vinLen uint64
-				if vins, vinLen, err = ReadVins(buf); err != nil {
-					log.Println("failed to read tx vins 2", err.Error())
-					return
-				}
-				if vouts, _, err = ReadVouts(buf); err != nil {
-					log.Println("failed to read tx vouts 2", err.Error())
-					return
-				}
-				// process witness data
-				for i := 0; i < int(vinLen); i++ {
-					var witLen uint64
-					if witLen, err = wire.ReadVarInt(buf, 0); err != nil {
-						log.Println("failed to read tx witness data length", err.Error())
-						return
-					}
-					for j := 0; j < int(witLen); j++ {
-						var jwitLen uint64
-						if jwitLen, err = wire.ReadVarInt(buf, 0); err != nil {
-							log.Println("failed to read tx witness data length 2", err.Error())
-							return
-						}
-						// TODO Currently ignoring witness data
-						// discard bytes
-						if _, err = buf.Seek(int64(jwitLen), io.SeekCurrent); err != nil {
-							log.Println("failed to discard tx witness data", err.Error())
-							return
-						}
-					}
-				}
-			} else {
-				// reset the buffer prior to witness marker check
-				if _, err = buf.Seek(-2, io.SeekCurrent); err != nil {
-					log.Println("failed to reset tx vin dummy", err.Error())
-					return
-				}
-				if vins, _, err = ReadVins(buf); err != nil {
-					log.Println("failed to read tx vins 2", err.Error())
-					return
-				}
-				if vouts, _, err = ReadVouts(buf); err != nil {
-					log.Println("failed to read tx vouts 2", err.Error())
-					return
-				}
-			}
-		} else { // no witness
-			if vins, _, err = ReadVins(buf); err != nil {
-				log.Println("failed to read tx vins 2", err.Error())
-				return
-			}
-			if vouts, _, err = ReadVouts(buf); err != nil {
-				log.Println("failed to read tx vouts 2", err.Error())
-				return
-			}
-		}
-
-		// Locktime
-		txLockTimeB := make([]byte, 4)
-		if _, err = io.ReadFull(buf, txLockTimeB); err != nil {
-			log.Println("failed to read tx locktime", err.Error())
-			return
-		}
-		txLockTime := binary.LittleEndian.Uint32(txLockTimeB)
-
-		tx := &wire.MsgTx{
-			Version:  int32(txVersion),
-			TxIn:     vins,
-			TxOut:    vouts,
-			LockTime: txLockTime,
 		}
 		block.Transactions = append(block.Transactions, tx)
 	}
@@ -375,6 +408,98 @@ func ReadBlockHeader(buf io.ReadSeeker) (header *wire.BlockHeader, err error) {
 
 	header = wire.NewBlockHeader(version, prevBlock, merkle, bits, nonce)
 	header.Timestamp = time.Unix(int64(blockTime), 0)
+	return
+}
+
+// ReadTransaction reads the transaction.
+func ReadTransaction(buf io.ReadSeeker, txAllowWitness bool) (tx *wire.MsgTx, err error) {
+	var vins []*wire.TxIn
+	var vouts []*wire.TxOut
+
+	txVersionB := make([]byte, 4)
+	if _, err = io.ReadFull(buf, txVersionB); err != nil {
+		log.Println("failed to read tx version", err.Error())
+		return
+	}
+	txVersion := binary.LittleEndian.Uint32(txVersionB)
+
+	if txAllowWitness {
+		txWitnessMarker := make([]byte, 2)
+		if _, err = io.ReadFull(buf, txWitnessMarker); err != nil {
+			log.Println("failed to read tx vins witness marker", err.Error())
+			return
+		}
+		if bytes.Equal(txWitnessMarker, []byte{0x0, 0x1}) {
+			var vinLen uint64
+			if vins, vinLen, err = ReadVins(buf); err != nil {
+				log.Println("failed to read tx vins 2", err.Error())
+				return
+			}
+			if vouts, _, err = ReadVouts(buf); err != nil {
+				log.Println("failed to read tx vouts 2", err.Error())
+				return
+			}
+			// process witness data
+			for i := 0; i < int(vinLen); i++ {
+				var witLen uint64
+				if witLen, err = wire.ReadVarInt(buf, 0); err != nil {
+					log.Println("failed to read tx witness data length", err.Error())
+					return
+				}
+				for j := 0; j < int(witLen); j++ {
+					var jwitLen uint64
+					if jwitLen, err = wire.ReadVarInt(buf, 0); err != nil {
+						log.Println("failed to read tx witness data length 2", err.Error())
+						return
+					}
+					// TODO Currently ignoring witness data
+					// discard bytes
+					if _, err = buf.Seek(int64(jwitLen), io.SeekCurrent); err != nil {
+						log.Println("failed to discard tx witness data", err.Error())
+						return
+					}
+				}
+			}
+		} else {
+			// reset the buffer prior to witness marker check
+			if _, err = buf.Seek(-2, io.SeekCurrent); err != nil {
+				log.Println("failed to reset tx vin dummy", err.Error())
+				return
+			}
+			if vins, _, err = ReadVins(buf); err != nil {
+				log.Println("failed to read tx vins 2", err.Error())
+				return
+			}
+			if vouts, _, err = ReadVouts(buf); err != nil {
+				log.Println("failed to read tx vouts 2", err.Error())
+				return
+			}
+		}
+	} else { // no witness
+		if vins, _, err = ReadVins(buf); err != nil {
+			log.Println("failed to read tx vins 2", err.Error())
+			return
+		}
+		if vouts, _, err = ReadVouts(buf); err != nil {
+			log.Println("failed to read tx vouts 2", err.Error())
+			return
+		}
+	}
+
+	// Locktime
+	txLockTimeB := make([]byte, 4)
+	if _, err = io.ReadFull(buf, txLockTimeB); err != nil {
+		log.Println("failed to read tx locktime", err.Error())
+		return
+	}
+	txLockTime := binary.LittleEndian.Uint32(txLockTimeB)
+
+	tx = &wire.MsgTx{
+		Version:  int32(txVersion),
+		TxIn:     vins,
+		TxOut:    vouts,
+		LockTime: txLockTime,
+	}
 	return
 }
 
@@ -477,6 +602,131 @@ func NextBlock(sc *bufio.Reader, network []byte, handle func([]byte) bool) (bool
 	}
 
 	return ok, err
+}
+
+type RPCResult struct {
+	Error  interface{} `json:"error,omitempty"`
+	Id     string      `json:"id,omitempty"`
+}
+type rawMempool struct {
+	RPCResult
+	Transactions []string `json:"result"`
+}
+type rawTransaction struct {
+	RPCResult
+	Transaction string `json:"result"`
+}
+
+// RPCRawMempool calls getrawtransaction on each tx on the specified rpc endpoint.
+func RPCGetRawTransactions(plugin Plugin, txids []string, tokencfg *Token) ([]*wire.MsgTx, error) {
+	if len(txids) == 0 { // no work required
+		return nil, nil
+	}
+
+	queue := make(chan int, 20) // max requests at a time
+	done := make(chan *string)   // done notification queue, informs blocking queue when to proceed
+	for i, txid := range txids {
+		params := make([]interface{}, 0)
+		params = append(params, txid)
+		go func(i int) {
+			queue <- i // block when queue is full
+			b, err := RPCRequest("getrawtransaction", tokencfg, params)
+			if err != nil {
+				log.Println("failed to make getrawmempool client request")
+				done <- nil
+				return
+			}
+			var res rawTransaction
+			if err := json.Unmarshal(b, &res); err != nil {
+				log.Println("failed to parse getrawmempool client request")
+				done <- nil
+				return
+			}
+			done <- &res.Transaction
+		}(i)
+	}
+	count := len(txids)
+	var rawtxs []string
+
+out:
+	for {
+		select {
+		case tx := <-done:
+			if tx != nil {
+				rawtxs = append(rawtxs, *tx)
+			}
+			<-queue // free up item in queue
+			count--
+			if count <= 0 {
+				break out
+			}
+		}
+	}
+
+	// Deserialize raw txs
+	var txs []*wire.MsgTx
+	for _, rawtx := range rawtxs {
+		b, err := hex.DecodeString(rawtx)
+		if err != nil {
+			continue
+		}
+		r := bytes.NewReader(b)
+		if tx, err := plugin.ReadTransaction(r); err != nil {
+			continue
+		} else {
+			txs = append(txs, tx)
+		}
+	}
+
+	return txs, nil
+}
+
+// RPCRawMempool calls getrawmempool on the specified rpc endpoint.
+func RPCRawMempool(tokencfg *Token) ([]string, error) {
+	b, err := RPCRequest("getrawmempool", tokencfg, nil)
+	if err != nil {
+		return nil, errors.New("failed to make getrawmempool client request")
+	}
+	var mempool rawMempool
+	if err := json.Unmarshal(b, &mempool); err != nil {
+		return nil, err
+	}
+	return mempool.Transactions, nil
+}
+
+// RPCRequest performs suitable rpc client request with basic auth and timeout.
+func RPCRequest(method string, tokencfg *Token, params []interface{}) ([]byte, error) {
+	paramList := ""
+	for _, val := range params {
+		switch v := val.(type) {
+		case int:
+			paramList += fmt.Sprintf("%v", v)
+		case []string:
+			paramList += fmt.Sprintf("%s", strings.Join(v, ","))
+		default:
+			paramList += fmt.Sprintf("\"%s\"", v)
+		}
+	}
+	vars := []byte(fmt.Sprintf(`{"jsonrpc":"1.0", "id":"go-exrplugins", "method":"%s", "params":[%s]}`, method, paramList))
+	r := bytes.NewReader(vars)
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+	req, err := http.NewRequest("POST", tokencfg.RPCHttp(), r)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(tokencfg.RPCUser, tokencfg.RPCPass)
+	req.Header.Set("content-type", "text/plain")
+	res, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	b, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+	return b, err
 }
 
 // FileExists returns whether the given file or directory exists.

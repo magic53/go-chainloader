@@ -3,22 +3,19 @@ package block
 import (
 	"bufio"
 	"bytes"
-	"errors"
-	"fmt"
 	"github.com/blocknetdx/go-exrplugins/data"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
-	"strconv"
 	"sync"
+	"time"
 )
 
 type Plugin struct {
@@ -28,6 +25,16 @@ type Plugin struct {
 	isReady   bool
 	txIndex   map[wire.OutPoint]*data.BlockTx
 	txCache   map[string]map[string]*data.Tx
+	tokenCfg  *data.Token
+}
+
+// SegwitActivated returns the segwit activation unix time.
+func (bp *Plugin) SegwitActivated() int64 {
+	if bp.tokenCfg != nil {
+		return bp.tokenCfg.SegwitActivated
+	} else {
+		return 1584537260 // unix time
+	}
 }
 
 // BlocksDir returns the location of all block dat files.
@@ -62,67 +69,11 @@ func (bp *Plugin) ClearIndex() {
 
 // LoadBlocks load all BLOCK transactions in the blocksDir.
 func (bp *Plugin) LoadBlocks(blocksDir string) (err error) {
-	exists := false
-	if exists, err = data.FileExists(blocksDir); err != nil || !exists {
-		if !exists {
-			err = errors.New(fmt.Sprintf("File doesn't exist: %s", blocksDir))
-		}
-		return
-	}
-
 	var files []os.FileInfo
-	if files, err = ioutil.ReadDir(blocksDir); err != nil {
-		return
-	}
-	if len(files) == 0 { // check if no block files
-		err = errors.New("BLOCK no db files found")
-		return
-	}
-
-	// Filter out all non blk files
-	var filterFiles []os.FileInfo
-	re := regexp.MustCompile(`blk(\d+).dat`)
-	for _, file := range files {
-		if !re.MatchString(file.Name()) {
-			continue
-		}
-		filterFiles = append(filterFiles, file)
-	}
-
-	// Sort most recent first
-	sort.Slice(filterFiles, func(a, b int) bool {
-		aName := filterFiles[a].Name()
-		bName := filterFiles[b].Name()
-		aMatches := re.FindStringSubmatch(aName)
-		if len(aMatches) < 1 {
-			return false
-		}
-		bMatches := re.FindStringSubmatch(bName)
-		if len(bMatches) < 1 {
-			return false
-		}
-		var err2 error
-		var ai int64
-		if ai, err2 = strconv.ParseInt(aMatches[1], 10, 64); err2 != nil {
-			return true
-		}
-		var bi int64
-		if bi, err2 = strconv.ParseInt(bMatches[1], 10, 64); err2 != nil {
-			return false
-		}
-		return ai > bi // sort descending
-	})
-
-	// TODO Limit loading the number of blk files
-	dats := 3 // len(filterFiles)
-	if len(filterFiles) >= dats {
-		filterFiles = filterFiles[:dats]
-	} else {
-		filterFiles = filterFiles[:1]
-	}
+	files, err = data.BlockFiles(blocksDir, regexp.MustCompile(`blk(\d+).dat`), 3)
 
 	// Iterate oldest blocks first (filterFiles sorted descending)
-	for _, file := range filterFiles {
+	for _, file := range files {
 		path := filepath.Join(blocksDir, file.Name())
 		var fs *os.File
 		fs, err = os.Open(path)
@@ -181,7 +132,7 @@ func (bp *Plugin) ReadBlock(buf io.ReadSeeker) (block *wire.MsgBlock, err error)
 		log.Println("failed to read block header", err.Error())
 		return
 	}
-	block, err = data.ReadBlock(buf, header, 1584537260)
+	block, err = data.ReadBlock(buf, header, bp.SegwitActivated())
 	return
 }
 
@@ -204,11 +155,26 @@ func (bp *Plugin) ReadBlockHeader(buf io.ReadSeeker) (header *wire.BlockHeader, 
 	return
 }
 
+// ReadTransaction deserializes bytes into transaction data.
+func (bp *Plugin) ReadTransaction(buf io.ReadSeeker) (tx *wire.MsgTx, err error) {
+	tx, err = data.ReadTransaction(buf, time.Now().Unix() >= bp.SegwitActivated())
+	return
+}
+
 // AddBlocks process new blocks received by the network to keep internal chain data
 // up to date.
 func (bp *Plugin) AddBlocks(blocks []byte) (txs []*data.Tx, err error) {
 	r := bytes.NewReader(blocks)
 	txs, err = bp.processBlocks(bufio.NewReader(r))
+	return
+}
+
+// ImportTransactions imports the specified transactions into the data store.
+func (bp *Plugin) ImportTransactions(transactions []*wire.MsgTx) (txs []*data.Tx, err error) {
+	bp.mu.RLock()
+	sendTxs, receiveTxs := data.ProcessTransactions(bp, time.Now(), transactions, bp.txIndex)
+	bp.mu.RUnlock()
+	txs = bp.processTxs(sendTxs, receiveTxs)
 	return
 }
 
@@ -280,15 +246,26 @@ func (bp *Plugin) processTxShard(blocks []*BLOCK, start, end int, wg *sync.WaitG
 	bp.mu.RLock()
 	bls := blocks[start:end]
 	for _, block := range bls {
-		lsend, lreceive := data.ProcessTransactions(bp, block.Block(), block.Block().Transactions, bp.txIndex)
+		lsend, lreceive := data.ProcessTransactions(bp, block.Block().Header.Timestamp, block.Block().Transactions, bp.txIndex)
 		cacheSendTxs = append(cacheSendTxs, lsend...)
 		cacheReceiveTxs = append(cacheReceiveTxs, lreceive...)
 	}
 	bp.mu.RUnlock()
 
+	// Consolidate transactions and add to cache
+	txs = bp.processTxs(cacheSendTxs, cacheReceiveTxs)
+
+	wg.Done()
+	return
+}
+
+// processTxs processes and consolidates send and receive transactions.
+func (bp *Plugin) processTxs(sendTxs []*data.Tx, receiveTxs []*data.Tx) (txs []*data.Tx) {
 	bp.mu.Lock()
+	defer bp.mu.Unlock()
+
 	// Sends
-	for _, cacheTx := range cacheSendTxs {
+	for _, cacheTx := range sendTxs {
 		addAddrToCache(bp.txCache, cacheTx)
 		txs = append(txs, cacheTx)
 	}
@@ -297,7 +274,7 @@ func (bp *Plugin) processTxShard(blocks []*BLOCK, start, end int, wg *sync.WaitG
 	// Consolidate payments to self. look for send transactions in
 	// the same tx as receive and combine by offsetting send amount
 	// and discarding receive record.
-	for _, cacheTx := range cacheReceiveTxs {
+	for _, cacheTx := range receiveTxs {
 		if sendTx, ok := bp.txCache[cacheTx.Address][cacheTx.KeyCategory(cacheTx.Txid, -1, "send")]; ok {
 			sendTx.Amount -= cacheTx.Amount
 		} else {
@@ -305,9 +282,7 @@ func (bp *Plugin) processTxShard(blocks []*BLOCK, start, end int, wg *sync.WaitG
 			txs = append(txs, cacheTx)
 		}
 	}
-	bp.mu.Unlock()
 
-	wg.Done()
 	return
 }
 
@@ -343,13 +318,16 @@ func addAddrToCache(txCache map[string]map[string]*data.Tx, tx *data.Tx) {
 }
 
 // NewPlugin returns new BLOCK plugin instance.
-func NewPlugin(cfg *chaincfg.Params, blocksDir string) data.Plugin {
+func NewPlugin(cfg *chaincfg.Params, blocksDir string, tokenCfg *data.Token) data.Plugin {
 	plugin := &Plugin{
 		cfg:       cfg,
 		blocksDir: blocksDir,
 		isReady:   false,
 		txCache:   make(map[string]map[string]*data.Tx),
 		txIndex:   make(map[wire.OutPoint]*data.BlockTx),
+	}
+	if tokenCfg != nil {
+		plugin.tokenCfg = tokenCfg
 	}
 	return plugin
 }
