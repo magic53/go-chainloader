@@ -25,9 +25,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
+var shutdownInProgress int32 = 0
 var registeredConfigs = map[string]*Token{}
 
 type Block interface {
@@ -76,6 +78,16 @@ func (tx *Tx) KeyCategory(txid string, vout int32, category string) string {
 type BlockTx struct {
 	OutP        *wire.OutPoint
 	Transaction *wire.MsgTx
+}
+
+// Shutdown starts the shutdown process.
+func ShutdownNow() {
+	atomic.StoreInt32(&shutdownInProgress, 1)
+}
+
+// IsShuttingDown returns true if shutdown was requested.
+func IsShuttingDown() bool {
+	return atomic.LoadInt32(&shutdownInProgress) == 1
 }
 
 // LoadTokenConfigs loads the token configurations at the specified path.
@@ -532,10 +544,12 @@ func ShardsData(desiredShards int, blocksLen int) (shards, rng, remainder int) {
 }
 
 // NextBlock finds all the blocks in the buffer and sends a seeked buffer
-// to a delegate handler.
+// to a delegate handler. This is a long running operation and checks for
+// shutdown.
 func NextBlock(sc *bufio.Reader, network []byte, handle func([]byte) bool) (bool, error) {
 	var err error
 	ok := false
+	count := 0
 	for err == nil && sc.Size() > 80 {
 		var b byte
 		if b, err = sc.ReadByte(); err != nil {
@@ -590,6 +604,11 @@ func NextBlock(sc *bufio.Reader, network []byte, handle func([]byte) bool) (bool
 
 		if !handle(blockBytes) { // ask delegate if we can proceed
 			ok = false
+			break
+		}
+
+		count++
+		if count % 10000 == 0 && IsShuttingDown() {
 			break
 		}
 	}

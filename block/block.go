@@ -74,6 +74,9 @@ func (bp *Plugin) LoadBlocks(blocksDir string) (err error) {
 
 	// Iterate oldest blocks first (filterFiles sorted descending)
 	for _, file := range files {
+		if data.IsShuttingDown() {
+			return
+		}
 		path := filepath.Join(blocksDir, file.Name())
 		var fs *os.File
 		fs, err = os.Open(path)
@@ -89,13 +92,14 @@ func (bp *Plugin) LoadBlocks(blocksDir string) (err error) {
 			_ = fs.Close()
 		}
 	}
+	log.Println("Done loading BLOCK database files")
 
 	bp.setReady()
 	return
 }
 
-// LoadBlocks loads block from the reader.
-func (bp *Plugin) loadBlocks(sc *bufio.Reader, network []byte) (blocks []*BLOCK, err error) {
+// loadBlocks loads block from the reader.
+func (bp *Plugin) loadBlocks(sc *bufio.Reader, network []byte) (blocks []*Block, err error) {
 	_, err = data.NextBlock(sc, network, func(blockBytes []byte) bool {
 		var wireBlock *wire.MsgBlock
 		var err2 error
@@ -177,7 +181,7 @@ func (bp *Plugin) setReady() {
 
 // processBlocks will process all blocks in the buffer.
 func (bp *Plugin) processBlocks(sc *bufio.Reader) (txs []*data.Tx, err error) {
-	var blocks []*BLOCK
+	var blocks []*Block
 	if blocks, err = bp.loadBlocks(sc, data.NetworkLE(bp.Network())); err != nil {
 		log.Println("Error loading block database")
 		return
@@ -205,6 +209,9 @@ func (bp *Plugin) processBlocks(sc *bufio.Reader) (txs []*data.Tx, err error) {
 							Transaction: tx,
 						})
 					}
+				}
+				if j % 1000 == 0 && data.IsShuttingDown() {
+					break
 				}
 			}
 			mu.Lock()
@@ -250,7 +257,7 @@ func (bp *Plugin) processBlocks(sc *bufio.Reader) (txs []*data.Tx, err error) {
 // processTxShard processes all transactions over specified range of blocks.
 // Creates all send and receive transactions in the range. This func is
 // thread safe.
-func (bp *Plugin) processTxShard(blocks []*BLOCK, start, end int, wg *sync.WaitGroup) (txs []*data.Tx) {
+func (bp *Plugin) processTxShard(blocks []*Block, start, end int, wg *sync.WaitGroup) (txs []*data.Tx) {
 	blocksLen := len(blocks)
 	if start >= blocksLen {
 		return
@@ -264,7 +271,10 @@ func (bp *Plugin) processTxShard(blocks []*BLOCK, start, end int, wg *sync.WaitG
 
 	bp.mu.RLock()
 	bls := blocks[start:end]
-	for _, block := range bls {
+	for i, block := range bls {
+		if i % 10000 == 0 && data.IsShuttingDown() {
+			break
+		}
 		lsend, lreceive := data.ProcessTransactions(bp, block.Block().Header.Timestamp, block.Block().Transactions, bp.txIndex)
 		cacheSendTxs = append(cacheSendTxs, lsend...)
 		cacheReceiveTxs = append(cacheReceiveTxs, lreceive...)
@@ -305,25 +315,25 @@ func (bp *Plugin) processTxs(sendTxs []*data.Tx, receiveTxs []*data.Tx) (txs []*
 	return
 }
 
-type BLOCK struct {
+type Block struct {
 	block  *wire.MsgBlock
 	hash   chainhash.Hash
 	height int64
 }
 
-func (b *BLOCK) Block() *wire.MsgBlock {
+func (b *Block) Block() *wire.MsgBlock {
 	return b.block
 }
 
-func (b *BLOCK) Hash() chainhash.Hash {
+func (b *Block) Hash() chainhash.Hash {
 	return b.hash
 }
 
-func (b *BLOCK) Height() int64 {
+func (b *Block) Height() int64 {
 	return b.height
 }
 
-func (b *BLOCK) setHash(hash chainhash.Hash) {
+func (b *Block) setHash(hash chainhash.Hash) {
 	b.hash = hash
 }
 
@@ -352,8 +362,8 @@ func NewPlugin(cfg *chaincfg.Params, blocksDir string, tokenCfg *data.Token) dat
 }
 
 // newBlocknetBlock returns a block instance.
-func newBlocknetBlock(block *wire.MsgBlock) *BLOCK {
-	newBlock := &BLOCK{
+func newBlocknetBlock(block *wire.MsgBlock) *Block {
+	newBlock := &Block{
 		block: block,
 	}
 	return newBlock
