@@ -55,7 +55,7 @@ func (bp *Plugin) ReadTransaction(buf io.ReadSeeker) (tx *wire.MsgTx, err error)
 }
 
 // NewPlugin returns new LTC plugin instance.
-func NewPlugin(cfg *chaincfg.Params, blocksDir string, tokenCfg *data.Token) data.Plugin {
+func NewPlugin(cfg *chaincfg.Params, blocksDir string, tokenCfg *data.Token) *Plugin {
 	plugin := &Plugin{
 		data.NewPlugin(cfg, blocksDir, tokenCfg),
 	}
