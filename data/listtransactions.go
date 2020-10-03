@@ -14,23 +14,9 @@ import (
 	"time"
 )
 
-// ListTransactions returns all transactions over the time period that are associated
-// with the specified addresses.
-func (bp *ChainPlugin) ListTransactions(fromTime, toTime int64, addresses []string) (txs []*Tx, err error) {
-	bp.mu.RLock()
-	defer bp.mu.RUnlock()
-	for _, address := range addresses {
-		transactions, ok := bp.txCache[address]
-		if !ok {
-			continue
-		}
-		for _, tx := range transactions {
-			if tx.Time >= fromTime && tx.Time <= toTime {
-				txs = append(txs, tx)
-			}
-		}
-	}
-	return
+type ListTransactionsPlugin interface {
+	ListTransactions(fromTime, toTime int64, addresses []string) ([]*Tx, error)
+	WriteListTransactions(fromMonth time.Time, toMonth time.Time, txDir string) error
 }
 
 type writeListTxAddr struct {
@@ -50,10 +36,29 @@ func (m *monthTx) Month() string {
 	return m.MonthDate.Month().String()
 }
 
-// WriteListTransactions writes the listtransactions data to disk. This data is organized on disk by
+// PluginListTransactions returns all transactions over the time period that are associated
+// with the specified addresses.
+func PluginListTransactions(bp Plugin, fromTime, toTime int64, addresses []string) (txs []*Tx, err error) {
+	bp.Mu().RLock()
+	defer bp.Mu().RUnlock()
+	for _, address := range addresses {
+		transactions, ok := bp.TxCache()[address]
+		if !ok {
+			continue
+		}
+		for _, tx := range transactions {
+			if tx.Time >= fromTime && tx.Time <= toTime {
+				txs = append(txs, tx)
+			}
+		}
+	}
+	return
+}
+
+// PluginWriteListTransactions writes the listtransactions data to disk. This data is organized on disk by
 // address and then month. The json file in this directory contains transaction output that is sorted
 // ascending by time.
-func (bp *ChainPlugin) WriteListTransactions(fromMonth time.Time, toMonth time.Time, txDir string) error {
+func PluginWriteListTransactions(bp Plugin, fromMonth time.Time, toMonth time.Time, txDir string) error {
 	if exists, err := FileExists(txDir); !exists || err != nil {
 		if err != nil {
 			return errors.New(fmt.Sprintf("failed to write transactions to disk: %s", err.Error()))
@@ -64,11 +69,11 @@ func (bp *ChainPlugin) WriteListTransactions(fromMonth time.Time, toMonth time.T
 
 	// Read txs from cache, use provided read lock
 	var txs []*writeListTxAddr
-	bp.mu.RLock()
-	for address, txmap := range bp.txCache {
+	bp.Mu().RLock()
+	for address, txmap := range bp.TxCache() {
 		txs = append(txs, &writeListTxAddr{Address: address, TxMap: txmap})
 	}
-	bp.mu.RUnlock()
+	bp.Mu().RUnlock()
 
 	txsLen := len(txs)
 	shards, rng, remainder := ShardsData(runtime.NumCPU()*4, txsLen)
@@ -86,7 +91,7 @@ func (bp *ChainPlugin) WriteListTransactions(fromMonth time.Time, toMonth time.T
 			for j := start; j < end; j++ {
 				txData := txs[j]
 				address := txData.Address
-				txsMonths, err := listTxToJSON(txData.TxMap, fromMonth, toMonth)
+				txsMonths, err := listTxToJSON(txData.TxMap, fromMonth, toMonth, bp.TokenConf().TxLimitPerMonth)
 				if err != nil {
 					continue
 				}
@@ -101,7 +106,7 @@ func (bp *ChainPlugin) WriteListTransactions(fromMonth time.Time, toMonth time.T
 							continue
 						}
 						file := fmt.Sprintf("%s.json", month.MonthDate.Format("2006-01"))
-						_ = WriteListTransactionsForAddress(bp.Ticker(), monthData.Address, file, month.TxsJson, txDir)
+						_ = writeListTransactionsForAddress(bp.Ticker(), monthData.Address, file, month.TxsJson, txDir)
 					}
 				}
 				mu2.Unlock()
@@ -114,8 +119,8 @@ func (bp *ChainPlugin) WriteListTransactions(fromMonth time.Time, toMonth time.T
 	return nil
 }
 
-// WriteListTransactionsForAddress writes the transaction data to disk for the specified address.
-func WriteListTransactionsForAddress(ticker string, address string, fileName string, jsonBytes []byte, txDir string) (err error) {
+// writeListTransactionsForAddress writes the transaction data to disk for the specified address.
+func writeListTransactionsForAddress(ticker string, address string, fileName string, jsonBytes []byte, txDir string) (err error) {
 	path := ListTransactionsFile(ticker, address, fileName, txDir)
 	var exists bool
 	if exists, err = FileExists(path); err != nil {
@@ -140,7 +145,7 @@ func ListTransactionsFile(ticker string, address string, fileName string, txDir 
 }
 
 // listTxToJSON converts transaction data into json.
-func listTxToJSON(txmap map[string]*Tx, fromMonth time.Time, toMonth time.Time) (txsMonths []*monthTx, err error) {
+func listTxToJSON(txmap map[string]*Tx, fromMonth time.Time, toMonth time.Time, txLimitPerMonth int) (txsMonths []*monthTx, err error) {
 	firstMonth := time.Date(fromMonth.Year(), fromMonth.Month(), 1, 0, 0, 0, 0, time.UTC)
 	lastMonth := time.Date(toMonth.Year(), toMonth.Month(), 1, 0, 0, 0, 0, time.UTC)
 	txsMonths = append(txsMonths, &monthTx{MonthDate: firstMonth})
@@ -166,8 +171,8 @@ func listTxToJSON(txmap map[string]*Tx, fromMonth time.Time, toMonth time.Time) 
 		})
 		// Only include most recent 100 transactions in the month // TODO Review truncate
 		sliced := month.Txs
-		if len(sliced) > 100 {
-			sliced = sliced[len(sliced)-100:]
+		if len(sliced) > txLimitPerMonth {
+			sliced = sliced[len(sliced)-txLimitPerMonth:]
 		}
 		var b []byte
 		b, err = json.Marshal(sliced)

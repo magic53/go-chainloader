@@ -16,6 +16,7 @@ func TestConfig(t *testing.T) {
 		"\n    rpcpass: pass" +
 	    "\n    segwitactivated: 12345" +
 		"\n    blocksdir: /opt/blockchain/block" +
+		"\n    txlimit: 1000" +
 		"\n  btc:" +
 		"\n    ticker: BTC" +
 		"\n    rpchost: localhost" +
@@ -23,7 +24,7 @@ func TestConfig(t *testing.T) {
 		"\n    rpcuser: test1" +
 		"\n    rpcpass: pass1" +
 		"\n    segwitactivated: 123456" +
-		"\n    blocksdir: /opt/blockchain/btc" +
+		"\n    txlimit: 100" +
 		"\n")
 	var config Config
 	if err := yaml.Unmarshal(yml, &config); err != nil {
@@ -50,6 +51,9 @@ func TestConfig(t *testing.T) {
 	if config.Blockchain["block"].BlocksDir != "/opt/blockchain/block" {
 		t.Error("expecting /opt/blockchain/block")
 	}
+	if config.Blockchain["block"].TxLimitPerMonth != 1000 {
+		t.Error("expecting 1000")
+	}
 	if config.Blockchain["block"].RPCHttp() != "http://localhost:41414/" {
 		t.Error("expecting http://localhost:41414/")
 	}
@@ -73,6 +77,9 @@ func TestConfig(t *testing.T) {
 	}
 	if config.Blockchain["btc"].BlocksDir != "/opt/blockchain/btc" {
 		t.Error("expecting /opt/blockchain/btc")
+	}
+	if config.Blockchain["block"].TxLimitPerMonth != 100 {
+		t.Error("expecting 100")
 	}
 	if config.Blockchain["btc"].RPCHttp() != "http://localhost:8332/" {
 		t.Error("expecting http://localhost:8332/")

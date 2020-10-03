@@ -25,12 +25,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
 
 var shutdownInProgress int32 = 0
-var registeredConfigs = map[string]*Token{}
+var registeredConfigs = map[string]TokenConfig{}
 
 type Block interface {
 	Block() *wire.MsgBlock
@@ -39,29 +40,29 @@ type Block interface {
 	setHash(hash chainhash.Hash)
 }
 
-type BlockReader interface {
+type Plugin interface {
+	Mu() *sync.RWMutex
+	BlocksDir() string
+	Ticker() string
+	Ready() bool
+	SetReady()
+	Network() wire.BitcoinNet
+	Config() chaincfg.Params
+	TokenConf() TokenConfig
+	TxIndex() map[wire.OutPoint]*BlockTx
+	TxCache() map[string]map[string]*Tx
 	SegwitActivated() int64
+	LoadBlocks(blocksDir string) error
 	ReadBlock(buf io.ReadSeeker) (*wire.MsgBlock, error)
 	ReadBlockHeader(buf io.ReadSeeker) (*wire.BlockHeader, error)
 	ReadTransaction(buf io.ReadSeeker) (*wire.MsgTx, error)
-}
-
-type PluginOverrides interface {
-	Ticker() string
-}
-
-type Plugin interface {
-	BlockReader
-	PluginOverrides
-	BlocksDir() string
-	Ready() bool
-	Network() wire.BitcoinNet
-	Config() chaincfg.Params
-	ClearIndex()
-	LoadBlocks(blocksDir string) error
+	ReadBlocks(sc *bufio.Reader) ([]*ChainBlock, error)
+	ProcessBlocks(sc *bufio.Reader) ([]*Tx, error)
+	ProcessTxShard(blocks []*ChainBlock, start, end int, wg *sync.WaitGroup) []*Tx
+	ProcessTxs(sendTxs []*Tx, receiveTxs []*Tx) (txs []*Tx)
+	AddTransactionToCache(tx *Tx)
 	AddBlocks(blocks []byte) ([]*Tx, error)
 	ImportTransactions(transactions []*wire.MsgTx) ([]*Tx, error)
-	ListTransactions(fromTime, toTime int64, addresses []string) ([]*Tx, error)
 }
 
 type Tx struct {
@@ -129,60 +130,22 @@ func LoadTokenConfigs(path string) bool {
 	return true
 }
 
-// TokenConfig returns loaded token config with name.
-func TokenConfig(name string) (Token, error) {
+// GetTokenConfig returns loaded token config with name.
+func GetTokenConfig(name string) (TokenConfig, error) {
 	if token, ok := registeredConfigs[name]; !ok {
-		return Token{}, errors.New("No config found with name " + name)
+		return TokenConfig{}, errors.New("No config found with name " + name)
 	} else {
-		return *token, nil
+		return token, nil
 	}
 }
 
-// TokenConfigs returns all token configurations.
-func TokenConfigs() []Token {
-	var r []Token
+// GetTokenConfigs returns all token configurations.
+func GetTokenConfigs() []TokenConfig {
+	var r []TokenConfig
 	for _, v := range registeredConfigs {
-		r = append(r, *v)
+		r = append(r, v)
 	}
 	return r
-}
-
-// ProcessTransactions will process all transactions in blocks.
-func ProcessTransactions(plugin Plugin, blockTime time.Time, transactions []*wire.MsgTx, txIndex map[wire.OutPoint]*BlockTx) (sendTxs, receiveTxs []*Tx) {
-	blockhash := chainhash.Hash{} // TODO block.BlockHash()
-	cfg := plugin.Config()
-	for _, tx := range transactions {
-		txHash := tx.TxHash()
-		txHashStr := txHash.String()
-
-		// Send category
-		for _, vin := range tx.TxIn {
-			prevoutTx, ok := txIndex[vin.PreviousOutPoint]
-			if !ok {
-				continue
-			}
-			prevTx := prevoutTx.Transaction
-			scriptPk := prevTx.TxOut[vin.PreviousOutPoint.Index].PkScript
-			amount := float64(prevTx.TxOut[vin.PreviousOutPoint.Index].Value) / 100000000.0 // TODO Assumes coin denomination is 100M
-			confirmations := 0                                                              // TODO Confirmations for send transaction
-			blockhash := blockhash
-			outp := &vin.PreviousOutPoint
-			sendTxs = append(sendTxs, ExtractAddresses(scriptPk, txHashStr, -1, amount,
-				blockTime, confirmations, "send", &blockhash, outp, &cfg)...)
-		}
-
-		// Receive category
-		for i, vout := range tx.TxOut {
-			scriptPk := vout.PkScript
-			amount := float64(vout.Value) / 100000000.0 // TODO Assumes coin denomination is 100M
-			confirmations := 0                          // TODO Confirmations for send transaction
-			blockhash := blockhash
-			outp := wire.NewOutPoint(&txHash, uint32(i))
-			receiveTxs = append(receiveTxs, ExtractAddresses(scriptPk, txHashStr, i, amount,
-				blockTime, confirmations, "receive", &blockhash, outp, &cfg)...)
-		}
-	}
-	return
 }
 
 // ExtractAddresses derives transactions from scriptPubKey.
@@ -216,15 +179,6 @@ func ExtractAddresses(scriptPk []byte, txHash string, txVout int, amount float64
 		}
 	}
 	return
-}
-
-// LoadBlocks opens the block database and loads block data.
-func LoadBlocks(plugin Plugin) (err error) {
-	log.Printf("Loading block database from '%s'", plugin.BlocksDir())
-	if err = plugin.LoadBlocks(plugin.BlocksDir()); err != nil {
-		return
-	}
-	return nil
 }
 
 // BlockFiles finds suitable block files.
@@ -634,7 +588,7 @@ func NextBlock(sc *bufio.Reader, network []byte, handle func([]byte) bool) (bool
 		}
 
 		count++
-		if count % 10000 == 0 && IsShuttingDown() {
+		if count%10000 == 0 && IsShuttingDown() {
 			break
 		}
 	}
@@ -650,8 +604,8 @@ func NextBlock(sc *bufio.Reader, network []byte, handle func([]byte) bool) (bool
 }
 
 type RPCResult struct {
-	Error  interface{} `json:"error,omitempty"`
-	Id     string      `json:"id,omitempty"`
+	Error interface{} `json:"error,omitempty"`
+	Id    string      `json:"id,omitempty"`
 }
 type rawMempool struct {
 	RPCResult
@@ -663,13 +617,13 @@ type rawTransaction struct {
 }
 
 // RPCRawMempool calls getrawtransaction on each tx on the specified rpc endpoint.
-func RPCGetRawTransactions(plugin Plugin, txids []string, tokencfg *Token) ([]*wire.MsgTx, error) {
+func RPCGetRawTransactions(plugin Plugin, txids []string, tokencfg *TokenConfig) ([]*wire.MsgTx, error) {
 	if len(txids) == 0 { // no work required
 		return nil, nil
 	}
 
 	queue := make(chan int, 20) // max requests at a time
-	done := make(chan *string)   // done notification queue, informs blocking queue when to proceed
+	done := make(chan *string)  // done notification queue, informs blocking queue when to proceed
 	for i, txid := range txids {
 		params := make([]interface{}, 0)
 		params = append(params, txid)
@@ -727,7 +681,7 @@ out:
 }
 
 // RPCRawMempool calls getrawmempool on the specified rpc endpoint.
-func RPCRawMempool(tokencfg *Token) ([]string, error) {
+func RPCRawMempool(tokencfg *TokenConfig) ([]string, error) {
 	b, err := RPCRequest("getrawmempool", tokencfg, nil)
 	if err != nil {
 		return nil, errors.New("failed to make getrawmempool client request")
@@ -740,7 +694,7 @@ func RPCRawMempool(tokencfg *Token) ([]string, error) {
 }
 
 // RPCRequest performs suitable rpc client request with basic auth and timeout.
-func RPCRequest(method string, tokencfg *Token, params []interface{}) ([]byte, error) {
+func RPCRequest(method string, tokencfg *TokenConfig, params []interface{}) ([]byte, error) {
 	paramList := ""
 	for _, val := range params {
 		switch v := val.(type) {

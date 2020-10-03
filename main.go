@@ -72,49 +72,49 @@ func main() {
 		log.Println("failed to load token configuration file: real time updates will be disabled")
 	}
 
-	tokens := data.TokenConfigs()
+	tokens := data.GetTokenConfigs()
 	for _, config := range tokens {
 		switch config.Ticker {
 		case "BLOCK":
 			// load block config
-			blockPlugin := block.NewPlugin(&block.MainNetParams, config.BlocksDir, &config)
-			if err = data.LoadBlocks(blockPlugin); err != nil {
+			plugin := block.NewPlugin(&block.MainNetParams, config.BlocksDir, &config)
+			if err = plugin.LoadBlocks(config.BlocksDir); err != nil {
 				log.Println("BLOCK failed!", err.Error())
 				return
 			}
-			debugBLOCK(blockPlugin, &config)
+			debugBLOCK(plugin, &config)
 		case "LTC":
 			// load ltc config
-			ltcPlugin := ltc.NewPlugin(&ltc.MainNetParams, config.BlocksDir, &config)
-			if err = data.LoadBlocks(ltcPlugin); err != nil {
+			plugin := ltc.NewPlugin(&ltc.MainNetParams, config.BlocksDir, &config)
+			if err = plugin.LoadBlocks(config.BlocksDir); err != nil {
 				log.Println("LTC failed!", err.Error())
 				return
 			}
-			debugLTC(ltcPlugin, &config)
+			debugLTC(plugin, &config)
 		case "BTC":
 			// load btc config
-			btcPlugin := btc.NewPlugin(&btc.MainNetParams, config.BlocksDir, &config)
-			if err = data.LoadBlocks(btcPlugin); err != nil {
+			plugin := btc.NewPlugin(&btc.MainNetParams, config.BlocksDir, &config)
+			if err = plugin.LoadBlocks(config.BlocksDir); err != nil {
 				log.Println("BTC failed!", err.Error())
 				return
 			}
-			debugBTC(btcPlugin, &config)
+			debugBTC(plugin, &config)
 		}
 	}
 
-out:
-	for {
-		select {
-		case sig := <-shutdown:
-			if sig == os.Interrupt {
-				log.Println("Exiting...")
-				break out
-			}
-		}
-	}
+	//out:
+	//	for {
+	//		select {
+	//		case sig := <-shutdown:
+	//			if sig == os.Interrupt {
+	//				log.Println("Exiting...")
+	//				break out
+	//			}
+	//		}
+	//	}
 }
 
-func debugBLOCK(blockPlugin *block.Plugin, config *data.Token) {
+func debugBLOCK(blockPlugin *block.Plugin, config *data.TokenConfig) {
 	var err error
 	//var txids []string
 	//txids, err = data.RPCRawMempool(config)
@@ -163,7 +163,7 @@ func debugBLOCK(blockPlugin *block.Plugin, config *data.Token) {
 	}
 }
 
-func debugLTC(ltcPlugin *ltc.Plugin, config *data.Token) {
+func debugLTC(ltcPlugin *ltc.Plugin, config *data.TokenConfig) {
 	var err error
 	//var txids []string
 	//txids, err = data.RPCRawMempool(config)
@@ -231,7 +231,7 @@ func debugLTC(ltcPlugin *ltc.Plugin, config *data.Token) {
 	}
 }
 
-func debugBTC(btcPlugin *btc.Plugin, config *data.Token) {
+func debugBTC(btcPlugin *btc.Plugin, config *data.TokenConfig) {
 	var err error
 	//var txids []string
 	//txids, err = data.RPCRawMempool(config)

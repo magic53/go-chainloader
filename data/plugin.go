@@ -3,7 +3,6 @@ package data
 import (
 	"bufio"
 	"bytes"
-	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"io"
@@ -17,105 +16,56 @@ import (
 	"time"
 )
 
-type ChainPlugin struct {
-	mu              sync.RWMutex
-	cfg             *chaincfg.Params
-	blocksDir       string
-	isReady         bool
-	txIndex         map[wire.OutPoint]*BlockTx
-	txCache         map[string]map[string]*Tx
-	TokenCfg        *Token
-	BlockReader     BlockReader
-	PluginOverrides PluginOverrides
+type ChainBlock struct {
+	block  *wire.MsgBlock
+	hash   chainhash.Hash
+	height int64
 }
 
-type chainPluginOverrides struct {
-	tokenCfg *Token
+func (b *ChainBlock) Block() *wire.MsgBlock {
+	return b.block
 }
 
-// Ticker returns the ticker symbol (e.g. BLOCK, BTC, LTC).
-func (bp *chainPluginOverrides) Ticker() string {
-	if bp.tokenCfg != nil && bp.tokenCfg.Ticker != "" {
-		return bp.tokenCfg.Ticker
+func (b *ChainBlock) Hash() chainhash.Hash {
+	return b.hash
+}
+
+func (b *ChainBlock) Height() int64 {
+	return b.height
+}
+
+func (b *ChainBlock) setHash(hash chainhash.Hash) {
+	b.hash = hash
+}
+
+// NewChainBlock returns a block instance.
+func NewChainBlock(block *wire.MsgBlock) *ChainBlock {
+	newBlock := &ChainBlock{
+		block: block,
+	}
+	return newBlock
+}
+
+// PluginTicker returns the ticker symbol (e.g. BLOCK, BTC, LTC).
+func PluginTicker(bp Plugin, defaultTicker string) string {
+	if !bp.TokenConf().IsNull() {
+		return bp.TokenConf().Ticker
 	} else {
-		return "UNKNOWN"
+		return defaultTicker
 	}
 }
 
-// SegwitActivated returns the segwit activation unix time.
-func (bp *chainPluginOverrides) SegwitActivated() int64 {
-	if bp.tokenCfg != nil {
-		return bp.tokenCfg.SegwitActivated
+// PluginSegwitActivated returns the segwit activation unix time.
+func PluginSegwitActivated(bp Plugin, defaultActivation int64) int64 {
+	if !bp.TokenConf().IsNull() {
+		return bp.TokenConf().SegwitActivated
 	} else {
-		return 0 // unix time
+		return defaultActivation
 	}
 }
 
-// ReadBlock deserializes bytes into block
-func (bp *chainPluginOverrides) ReadBlock(buf io.ReadSeeker) (block *wire.MsgBlock, err error) {
-	var header *wire.BlockHeader
-	if header, err = bp.ReadBlockHeader(buf); err != nil {
-		log.Println("failed to read block header", err.Error())
-		return
-	}
-	block, err = ReadBlock(buf, header, bp.SegwitActivated())
-	return
-}
-
-// ReadBlockHeader deserializes block header.
-func (bp *chainPluginOverrides) ReadBlockHeader(buf io.ReadSeeker) (header *wire.BlockHeader, err error) {
-	header, err = ReadBlockHeader(buf)
-	return
-}
-
-// ReadTransaction deserializes bytes into transaction
-func (bp *chainPluginOverrides) ReadTransaction(buf io.ReadSeeker) (tx *wire.MsgTx, err error) {
-	tx, err = ReadTransaction(buf, time.Now().Unix() >= bp.SegwitActivated())
-	return
-}
-
-// Ticker returns the token ticker symbol. (e.g. BLOCK, BTC, LTC)
-func (bp *ChainPlugin) Ticker() string {
-	return bp.PluginOverrides.Ticker()
-}
-
-// SegwitActivated returns the segwit activation unix time.
-func (bp *ChainPlugin) SegwitActivated() int64 {
-	return bp.BlockReader.SegwitActivated()
-}
-
-// BlocksDir returns the location of all block dat files.
-func (bp *ChainPlugin) BlocksDir() string {
-	return bp.blocksDir
-}
-
-// Ready returns true if the block db has loaded.
-func (bp *ChainPlugin) Ready() bool {
-	bp.mu.RLock()
-	defer bp.mu.RUnlock()
-	return bp.isReady
-}
-
-// Network returns the network magic number.
-func (bp *ChainPlugin) Network() wire.BitcoinNet {
-	return bp.cfg.Net
-}
-
-// Config returns the network magic number.
-func (bp *ChainPlugin) Config() chaincfg.Params {
-	return *bp.cfg
-}
-
-// ClearIndex removes references to the transaction index. This typically frees up
-// significant memory.
-func (bp *ChainPlugin) ClearIndex() {
-	bp.mu.Lock()
-	defer bp.mu.Unlock()
-	bp.txIndex = map[wire.OutPoint]*BlockTx{}
-}
-
-// LoadBlocks load all transactions in the blocks dir.
-func (bp *ChainPlugin) LoadBlocks(blocksDir string) (err error) {
+// PluginLoadBlocks load all transactions in the blocks dir.
+func PluginLoadBlocks(bp Plugin, blocksDir string) (err error) {
 	var files []os.FileInfo
 	files, err = BlockFiles(blocksDir, regexp.MustCompile(`blk(\d+).dat`), 3)
 
@@ -130,65 +80,46 @@ func (bp *ChainPlugin) LoadBlocks(blocksDir string) (err error) {
 		if err != nil {
 			return
 		}
-		if _, err = bp.processBlocks(bufio.NewReader(fs)); err != nil {
+		if _, err = bp.ProcessBlocks(bufio.NewReader(fs)); err != nil {
 			log.Printf("Error loading block database %s\n", path)
 			_ = fs.Close()
 			return
 		} else {
-			log.Printf("%s db file loaded: %s\n", bp.TokenCfg.Ticker, path)
+			log.Printf("%s db file loaded: %s\n", bp.Ticker(), path)
 			_ = fs.Close()
 		}
 	}
-	log.Printf("Done loading %s database files\n", bp.TokenCfg.Ticker)
+	log.Printf("Done loading %s database files\n", bp.Ticker())
 
-	bp.setReady()
+	bp.SetReady()
 	return
 }
 
 // ReadBlock deserializes bytes into block 
-func (bp *ChainPlugin) ReadBlock(buf io.ReadSeeker) (block *wire.MsgBlock, err error) {
-	block, err = bp.BlockReader.ReadBlock(buf)
+func PluginReadBlock(bp Plugin, buf io.ReadSeeker) (block *wire.MsgBlock, err error) {
+	var header *wire.BlockHeader
+	if header, err = bp.ReadBlockHeader(buf); err != nil {
+		log.Println("failed to read block header", err.Error())
+		return
+	}
+	block, err = ReadBlock(buf, header, bp.SegwitActivated())
 	return
 }
 
 // ReadBlockHeader deserializes block header.
-func (bp *ChainPlugin) ReadBlockHeader(buf io.ReadSeeker) (header *wire.BlockHeader, err error) {
-	header, err = bp.BlockReader.ReadBlockHeader(buf)
+func PluginReadBlockHeader(bp Plugin, buf io.ReadSeeker) (header *wire.BlockHeader, err error) {
+	header, err = ReadBlockHeader(buf)
 	return
 }
 
 // ReadTransaction deserializes bytes into transaction 
-func (bp *ChainPlugin) ReadTransaction(buf io.ReadSeeker) (tx *wire.MsgTx, err error) {
-	tx, err = bp.BlockReader.ReadTransaction(buf)
+func PluginReadTransaction(bp Plugin, buf io.ReadSeeker) (tx *wire.MsgTx, err error) {
+	tx, err = ReadTransaction(buf, time.Now().Unix() >= bp.SegwitActivated())
 	return
 }
 
-// AddBlocks process new blocks received by the network to keep internal chain data
-// up to date.
-func (bp *ChainPlugin) AddBlocks(blocks []byte) (txs []*Tx, err error) {
-	r := bytes.NewReader(blocks)
-	txs, err = bp.processBlocks(bufio.NewReader(r))
-	return
-}
-
-// ImportTransactions imports the specified transactions into the data store.
-func (bp *ChainPlugin) ImportTransactions(transactions []*wire.MsgTx) (txs []*Tx, err error) {
-	bp.mu.RLock()
-	sendTxs, receiveTxs := ProcessTransactions(bp, time.Now(), transactions, bp.txIndex)
-	bp.mu.RUnlock()
-	txs = bp.processTxs(sendTxs, receiveTxs)
-	return
-}
-
-// setReady state on the plugin.
-func (bp *ChainPlugin) setReady() {
-	bp.mu.Lock()
-	defer bp.mu.Unlock()
-	bp.isReady = true
-}
-
-// loadBlocks loads block from the reader.
-func (bp *ChainPlugin) loadBlocks(sc *bufio.Reader, network []byte) (blocks []*ChainBlock, err error) {
+// PluginReadBlocks loads block from the reader.
+func PluginReadBlocks(bp Plugin, sc *bufio.Reader, network []byte) (blocks []*ChainBlock, err error) {
 	_, err = NextBlock(sc, network, func(blockBytes []byte) bool {
 		var wireBlock *wire.MsgBlock
 		var err2 error
@@ -196,7 +127,7 @@ func (bp *ChainPlugin) loadBlocks(sc *bufio.Reader, network []byte) (blocks []*C
 			log.Println("failed to read block", err2.Error())
 			return true
 		}
-		block := newChainBlock(wireBlock)
+		block := NewChainBlock(wireBlock)
 		blocks = append(blocks, block)
 		return true
 	})
@@ -208,10 +139,10 @@ func (bp *ChainPlugin) loadBlocks(sc *bufio.Reader, network []byte) (blocks []*C
 	return
 }
 
-// processBlocks will process all blocks in the buffer.
-func (bp *ChainPlugin) processBlocks(sc *bufio.Reader) (txs []*Tx, err error) {
+// PluginProcessBlocks will process all blocks in the buffer.
+func PluginProcessBlocks(bp Plugin, sc *bufio.Reader) (txs []*Tx, err error) {
 	var blocks []*ChainBlock
-	if blocks, err = bp.loadBlocks(sc, NetworkLE(bp.Network())); err != nil {
+	if blocks, err = bp.ReadBlocks(sc); err != nil {
 		log.Println("Error loading block database")
 		return
 	}
@@ -252,11 +183,11 @@ func (bp *ChainPlugin) processBlocks(sc *bufio.Reader) (txs []*Tx, err error) {
 	wg.Wait()
 
 	// Update the tx index
-	bp.mu.Lock()
+	bp.Mu().Lock()
 	for _, txi := range txBlocks {
-		bp.txIndex[*txi.OutP] = txi
+		bp.TxIndex()[*txi.OutP] = txi
 	}
-	bp.mu.Unlock()
+	bp.Mu().Unlock()
 
 	// Sort blocks by time ascending
 	sort.Slice(blocks, func(i, j int) bool {
@@ -272,7 +203,7 @@ func (bp *ChainPlugin) processBlocks(sc *bufio.Reader) (txs []*Tx, err error) {
 	for i := 0; i < shards; i++ {
 		start, end := ShardsIter(shards, i, rng, remainder)
 		go func() {
-			transactions := bp.processTxShard(blocks, start, end, &wg)
+			transactions := bp.ProcessTxShard(blocks, start, end, &wg)
 			mu.Lock()
 			txs = append(txs, transactions...)
 			mu.Unlock()
@@ -283,10 +214,9 @@ func (bp *ChainPlugin) processBlocks(sc *bufio.Reader) (txs []*Tx, err error) {
 	return
 }
 
-// processTxShard processes all transactions over specified range of blocks.
-// Creates all send and receive transactions in the range. This func is
-// thread safe.
-func (bp *ChainPlugin) processTxShard(blocks []*ChainBlock, start, end int, wg *sync.WaitGroup) (txs []*Tx) {
+// PluginProcessTxShard processes all transactions over specified range of blocks.
+// Creates all send and receive transactions in the range. Thread safe.
+func PluginProcessTxShard(bp Plugin, blocks []*ChainBlock, start, end int, wg *sync.WaitGroup) (txs []*Tx) {
 	blocksLen := len(blocks)
 	if start >= blocksLen {
 		return
@@ -298,33 +228,33 @@ func (bp *ChainPlugin) processTxShard(blocks []*ChainBlock, start, end int, wg *
 	var cacheSendTxs []*Tx
 	var cacheReceiveTxs []*Tx
 
-	bp.mu.RLock()
+	bp.Mu().RLock()
 	bls := blocks[start:end]
 	for i, block := range bls {
 		if i%10000 == 0 && IsShuttingDown() {
 			break
 		}
-		lsend, lreceive := ProcessTransactions(bp, block.Block().Header.Timestamp, block.Block().Transactions, bp.txIndex)
+		lsend, lreceive := ProcessTransactions(bp, block.Block().Header.Timestamp, block.Block().Transactions, bp.TxIndex())
 		cacheSendTxs = append(cacheSendTxs, lsend...)
 		cacheReceiveTxs = append(cacheReceiveTxs, lreceive...)
 	}
-	bp.mu.RUnlock()
+	bp.Mu().RUnlock()
 
 	// Consolidate transactions and add to cache
-	txs = bp.processTxs(cacheSendTxs, cacheReceiveTxs)
+	txs = bp.ProcessTxs(cacheSendTxs, cacheReceiveTxs)
 
 	wg.Done()
 	return
 }
 
-// processTxs processes and consolidates send and receive transactions.
-func (bp *ChainPlugin) processTxs(sendTxs []*Tx, receiveTxs []*Tx) (txs []*Tx) {
-	bp.mu.Lock()
-	defer bp.mu.Unlock()
+// PluginProcessTxs processes and consolidates send and receive transactions.
+func PluginProcessTxs(bp Plugin, sendTxs []*Tx, receiveTxs []*Tx) (txs []*Tx) {
+	bp.Mu().Lock()
+	defer bp.Mu().Unlock()
 
 	// Sends
 	for _, cacheTx := range sendTxs {
-		AddAddrToCache(bp.txCache, cacheTx)
+		bp.AddTransactionToCache(cacheTx)
 		txs = append(txs, cacheTx)
 	}
 
@@ -333,10 +263,10 @@ func (bp *ChainPlugin) processTxs(sendTxs []*Tx, receiveTxs []*Tx) (txs []*Tx) {
 	// the same tx as receive and combine by offsetting send amount
 	// and discarding receive record.
 	for _, cacheTx := range receiveTxs {
-		if sendTx, ok := bp.txCache[cacheTx.Address][cacheTx.KeyCategory(cacheTx.Txid, -1, "send")]; ok {
+		if sendTx, ok := bp.TxCache()[cacheTx.Address][cacheTx.KeyCategory(cacheTx.Txid, -1, "send")]; ok {
 			sendTx.Amount -= cacheTx.Amount
 		} else {
-			AddAddrToCache(bp.txCache, cacheTx)
+			bp.AddTransactionToCache(cacheTx)
 			txs = append(txs, cacheTx)
 		}
 	}
@@ -344,59 +274,66 @@ func (bp *ChainPlugin) processTxs(sendTxs []*Tx, receiveTxs []*Tx) (txs []*Tx) {
 	return
 }
 
-type ChainBlock struct {
-	block  *wire.MsgBlock
-	hash   chainhash.Hash
-	height int64
-}
-
-func (b *ChainBlock) Block() *wire.MsgBlock {
-	return b.block
-}
-
-func (b *ChainBlock) Hash() chainhash.Hash {
-	return b.hash
-}
-
-func (b *ChainBlock) Height() int64 {
-	return b.height
-}
-
-func (b *ChainBlock) setHash(hash chainhash.Hash) {
-	b.hash = hash
-}
-
-// AddAddrToCache adds the tx to the cache. Not thread safe, expects any
+// PluginAddAddrToCache adds the tx to the cache. Not thread safe, expects any
 // mutexes to be locked outside this call.
-func AddAddrToCache(txCache map[string]map[string]*Tx, tx *Tx) {
-	if _, ok := txCache[tx.Address]; !ok {
-		txCache[tx.Address] = make(map[string]*Tx)
+func PluginAddAddrToCache(bp Plugin, tx *Tx) {
+	if _, ok := bp.TxCache()[tx.Address]; !ok {
+		bp.TxCache()[tx.Address] = make(map[string]*Tx)
 	}
-	txCache[tx.Address][tx.Key()] = tx
+	bp.TxCache()[tx.Address][tx.Key()] = tx
 }
 
-// NewPlugin returns new plugin instance.
-func NewPlugin(cfg *chaincfg.Params, blocksDir string, tokenCfg *Token) *ChainPlugin {
-	extens := &chainPluginOverrides{tokenCfg: tokenCfg}
-	plugin := &ChainPlugin{
-		cfg:             cfg,
-		blocksDir:       blocksDir,
-		isReady:         false,
-		txCache:         make(map[string]map[string]*Tx),
-		txIndex:         make(map[wire.OutPoint]*BlockTx),
-		BlockReader:     extens,
-		PluginOverrides: extens,
-	}
-	if tokenCfg != nil {
-		plugin.TokenCfg = tokenCfg
-	}
-	return plugin
+// PluginAddBlocks process new blocks received by the network to keep internal chain data
+// up to date.
+func PluginAddBlocks(bp Plugin, blocks []byte) (txs []*Tx, err error) {
+	r := bytes.NewReader(blocks)
+	txs, err = bp.ProcessBlocks(bufio.NewReader(r))
+	return
 }
 
-// newChainBlock returns a block instance.
-func newChainBlock(block *wire.MsgBlock) *ChainBlock {
-	newBlock := &ChainBlock{
-		block: block,
+// PluginImportTransactions imports the specified transactions into the data store.
+func PluginImportTransactions(bp Plugin, transactions []*wire.MsgTx) (txs []*Tx, err error) {
+	bp.Mu().RLock()
+	sendTxs, receiveTxs := ProcessTransactions(bp, time.Now(), transactions, bp.TxIndex())
+	bp.Mu().RUnlock()
+	txs = bp.ProcessTxs(sendTxs, receiveTxs)
+	return
+}
+
+// ProcessTransactions will process all transactions in blocks.
+func ProcessTransactions(plugin Plugin, blockTime time.Time, transactions []*wire.MsgTx, txIndex map[wire.OutPoint]*BlockTx) (sendTxs, receiveTxs []*Tx) {
+	blockhash := chainhash.Hash{} // TODO block.BlockHash()
+	cfg := plugin.Config()
+	for _, tx := range transactions {
+		txHash := tx.TxHash()
+		txHashStr := txHash.String()
+
+		// Send category
+		for _, vin := range tx.TxIn {
+			prevoutTx, ok := txIndex[vin.PreviousOutPoint]
+			if !ok {
+				continue
+			}
+			prevTx := prevoutTx.Transaction
+			scriptPk := prevTx.TxOut[vin.PreviousOutPoint.Index].PkScript
+			amount := float64(prevTx.TxOut[vin.PreviousOutPoint.Index].Value) / 100000000.0 // TODO Assumes coin denomination is 100M
+			confirmations := 0                                                              // TODO Confirmations for send transaction
+			blockhash := blockhash
+			outp := &vin.PreviousOutPoint
+			sendTxs = append(sendTxs, ExtractAddresses(scriptPk, txHashStr, -1, amount,
+				blockTime, confirmations, "send", &blockhash, outp, &cfg)...)
+		}
+
+		// Receive category
+		for i, vout := range tx.TxOut {
+			scriptPk := vout.PkScript
+			amount := float64(vout.Value) / 100000000.0 // TODO Assumes coin denomination is 100M
+			confirmations := 0                          // TODO Confirmations for send transaction
+			blockhash := blockhash
+			outp := wire.NewOutPoint(&txHash, uint32(i))
+			receiveTxs = append(receiveTxs, ExtractAddresses(scriptPk, txHashStr, i, amount,
+				blockTime, confirmations, "receive", &blockhash, outp, &cfg)...)
+		}
 	}
-	return newBlock
+	return
 }
