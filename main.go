@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -72,46 +73,114 @@ func main() {
 		log.Println("failed to load token configuration file: real time updates will be disabled")
 	}
 
+	var plugins []interface{}
 	tokens := data.GetTokenConfigs()
 	for _, config := range tokens {
 		switch config.Ticker {
 		case "BLOCK":
 			// load block config
-			plugin := block.NewPlugin(&block.MainNetParams, config.BlocksDir, &config)
-			if err = plugin.LoadBlocks(config.BlocksDir); err != nil {
+			plugin := block.NewPlugin(&block.MainNetParams, config)
+			if err = plugin.LoadBlocks(plugin.BlocksDir()); err != nil {
 				log.Println("BLOCK failed!", err.Error())
 				return
 			}
-			debugBLOCK(plugin, &config)
+			plugins = append(plugins, plugin)
+			//debugBLOCK(plugin, &config)
 		case "LTC":
 			// load ltc config
-			plugin := ltc.NewPlugin(&ltc.MainNetParams, config.BlocksDir, &config)
-			if err = plugin.LoadBlocks(config.BlocksDir); err != nil {
+			plugin := ltc.NewPlugin(&ltc.MainNetParams, config)
+			if err = plugin.LoadBlocks(plugin.BlocksDir()); err != nil {
 				log.Println("LTC failed!", err.Error())
 				return
 			}
-			debugLTC(plugin, &config)
+			plugins = append(plugins, plugin)
+			//debugLTC(plugin, &config)
 		case "BTC":
 			// load btc config
-			plugin := btc.NewPlugin(&btc.MainNetParams, config.BlocksDir, &config)
-			if err = plugin.LoadBlocks(config.BlocksDir); err != nil {
+			plugin := btc.NewPlugin(&btc.MainNetParams, config)
+			if err = plugin.LoadBlocks(plugin.BlocksDir()); err != nil {
 				log.Println("BTC failed!", err.Error())
 				return
 			}
-			debugBTC(plugin, &config)
+			plugins = append(plugins, plugin)
+			//debugBTC(plugin, &config)
 		}
 	}
 
-	//out:
-	//	for {
-	//		select {
-	//		case sig := <-shutdown:
-	//			if sig == os.Interrupt {
-	//				log.Println("Exiting...")
-	//				break out
-	//			}
-	//		}
-	//	}
+	go watchMempools(plugins)
+
+out:
+	for {
+		select {
+		case sig := <-shutdown:
+			if sig == os.Interrupt {
+				log.Println("Exiting...")
+				break out
+			}
+		}
+	}
+}
+
+// watchMempools watches the mempool on a timer and saves new transaction data
+// to disk.
+func watchMempools(plugins []interface{}) {
+	var counter uint64
+	for {
+		if data.IsShuttingDown() {
+			break
+		}
+		if counter%30000 == 0 { // every ~30 seconds
+			var wg sync.WaitGroup
+			wg.Add(len(plugins))
+			for _, plugin := range plugins {
+				go func(plugin interface{}) {
+					defer wg.Done()
+					dataPlugin, ok := plugin.(data.Plugin)
+					if !ok {
+						return
+					}
+					mempoolPlugin, ok := plugin.(data.RPCMempoolPlugin)
+					if !ok {
+						return
+					}
+					rawTxPlugin, ok := plugin.(data.RPCRawTransactionsPlugin)
+					if !ok {
+						return
+					}
+					listTxPlugin, ok := plugin.(data.ListTransactionsPlugin)
+					if !ok {
+						return
+					}
+					mempool, err := mempoolPlugin.GetRawMempool()
+					if err != nil {
+						log.Printf("failed to getrawmempool on %s", dataPlugin.Ticker())
+						return
+					}
+					if len(mempool) < 1 {
+						return
+					}
+					wireTxs, err := rawTxPlugin.GetRawTransactions(mempool)
+					if err != nil || len(wireTxs) < 1 {
+						return
+					}
+					var txs []*data.Tx
+					txs, err = dataPlugin.ImportTransactions(wireTxs)
+					if err != nil {
+						log.Printf("failed to import transactions for %s", dataPlugin.Ticker())
+						return
+					}
+					fromMonth := time.Date(2020, 8, 1, 0, 0, 0, 0, time.UTC)
+					toMonth := time.Date(2020, 10, 1, 0, 0, 0, 0, time.UTC)
+					for _, tx := range txs {
+						_ = listTxPlugin.WriteListTransactionsForAddress(tx.Address, fromMonth, toMonth, dataPlugin.TokenConf().ListTransactionsDir)
+					}
+				}(plugin)
+			}
+			wg.Wait()
+		}
+		time.Sleep(250 * time.Millisecond)
+		counter += 250
+	}
 }
 
 func debugBLOCK(blockPlugin *block.Plugin, config *data.TokenConfig) {
