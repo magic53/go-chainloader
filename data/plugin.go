@@ -18,22 +18,32 @@ import (
 )
 
 type ChainPlugin struct {
-	mu          sync.RWMutex
-	cfg         *chaincfg.Params
-	blocksDir   string
-	isReady     bool
-	txIndex     map[wire.OutPoint]*BlockTx
-	txCache     map[string]map[string]*Tx
-	TokenCfg    *Token
-	BlockReader BlockReader
+	mu              sync.RWMutex
+	cfg             *chaincfg.Params
+	blocksDir       string
+	isReady         bool
+	txIndex         map[wire.OutPoint]*BlockTx
+	txCache         map[string]map[string]*Tx
+	TokenCfg        *Token
+	BlockReader     BlockReader
+	PluginOverrides PluginOverrides
 }
 
-type chainPluginBlockReader struct {
+type chainPluginOverrides struct {
 	tokenCfg *Token
 }
 
+// Ticker returns the ticker symbol (e.g. BLOCK, BTC, LTC).
+func (bp *chainPluginOverrides) Ticker() string {
+	if bp.tokenCfg != nil && bp.tokenCfg.Ticker != "" {
+		return bp.tokenCfg.Ticker
+	} else {
+		return "UNKNOWN"
+	}
+}
+
 // SegwitActivated returns the segwit activation unix time.
-func (bp *chainPluginBlockReader) SegwitActivated() int64 {
+func (bp *chainPluginOverrides) SegwitActivated() int64 {
 	if bp.tokenCfg != nil {
 		return bp.tokenCfg.SegwitActivated
 	} else {
@@ -42,7 +52,7 @@ func (bp *chainPluginBlockReader) SegwitActivated() int64 {
 }
 
 // ReadBlock deserializes bytes into block
-func (bp *chainPluginBlockReader) ReadBlock(buf io.ReadSeeker) (block *wire.MsgBlock, err error) {
+func (bp *chainPluginOverrides) ReadBlock(buf io.ReadSeeker) (block *wire.MsgBlock, err error) {
 	var header *wire.BlockHeader
 	if header, err = bp.ReadBlockHeader(buf); err != nil {
 		log.Println("failed to read block header", err.Error())
@@ -53,15 +63,20 @@ func (bp *chainPluginBlockReader) ReadBlock(buf io.ReadSeeker) (block *wire.MsgB
 }
 
 // ReadBlockHeader deserializes block header.
-func (bp *chainPluginBlockReader) ReadBlockHeader(buf io.ReadSeeker) (header *wire.BlockHeader, err error) {
+func (bp *chainPluginOverrides) ReadBlockHeader(buf io.ReadSeeker) (header *wire.BlockHeader, err error) {
 	header, err = ReadBlockHeader(buf)
 	return
 }
 
 // ReadTransaction deserializes bytes into transaction
-func (bp *chainPluginBlockReader) ReadTransaction(buf io.ReadSeeker) (tx *wire.MsgTx, err error) {
+func (bp *chainPluginOverrides) ReadTransaction(buf io.ReadSeeker) (tx *wire.MsgTx, err error) {
 	tx, err = ReadTransaction(buf, time.Now().Unix() >= bp.SegwitActivated())
 	return
+}
+
+// Ticker returns the token ticker symbol. (e.g. BLOCK, BTC, LTC)
+func (bp *ChainPlugin) Ticker() string {
+	return bp.PluginOverrides.Ticker()
 }
 
 // SegwitActivated returns the segwit activation unix time.
@@ -362,13 +377,15 @@ func AddAddrToCache(txCache map[string]map[string]*Tx, tx *Tx) {
 
 // NewPlugin returns new plugin instance.
 func NewPlugin(cfg *chaincfg.Params, blocksDir string, tokenCfg *Token) *ChainPlugin {
+	extens := &chainPluginOverrides{tokenCfg: tokenCfg}
 	plugin := &ChainPlugin{
-		cfg:         cfg,
-		blocksDir:   blocksDir,
-		isReady:     false,
-		txCache:     make(map[string]map[string]*Tx),
-		txIndex:     make(map[wire.OutPoint]*BlockTx),
-		BlockReader: &chainPluginBlockReader{tokenCfg: tokenCfg},
+		cfg:             cfg,
+		blocksDir:       blocksDir,
+		isReady:         false,
+		txCache:         make(map[string]map[string]*Tx),
+		txIndex:         make(map[wire.OutPoint]*BlockTx),
+		BlockReader:     extens,
+		PluginOverrides: extens,
 	}
 	if tokenCfg != nil {
 		plugin.TokenCfg = tokenCfg

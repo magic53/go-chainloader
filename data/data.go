@@ -46,8 +46,13 @@ type BlockReader interface {
 	ReadTransaction(buf io.ReadSeeker) (*wire.MsgTx, error)
 }
 
+type PluginOverrides interface {
+	Ticker() string
+}
+
 type Plugin interface {
 	BlockReader
+	PluginOverrides
 	BlocksDir() string
 	Ready() bool
 	Network() wire.BitcoinNet

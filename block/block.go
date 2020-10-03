@@ -13,6 +13,15 @@ type Plugin struct {
 	*data.ChainPlugin
 }
 
+// Ticker returns the ticker symbol (e.g. BLOCK, BTC, LTC).
+func (bp *Plugin) Ticker() string {
+	if bp.TokenCfg != nil && bp.TokenCfg.Ticker != "" {
+		return bp.TokenCfg.Ticker
+	} else {
+		return "BLOCK"
+	}
+}
+
 // SegwitActivated returns the segwit activation unix time.
 func (bp *Plugin) SegwitActivated() int64 {
 	if bp.TokenCfg != nil {
@@ -59,10 +68,11 @@ func (bp *Plugin) ReadTransaction(buf io.ReadSeeker) (tx *wire.MsgTx, err error)
 }
 
 // NewPlugin returns new BLOCK plugin instance.
-func NewPlugin(cfg *chaincfg.Params, blocksDir string, tokenCfg *data.Token) data.Plugin {
+func NewPlugin(cfg *chaincfg.Params, blocksDir string, tokenCfg *data.Token) *Plugin {
 	plugin := &Plugin{
 		data.NewPlugin(cfg, blocksDir, tokenCfg),
 	}
 	plugin.BlockReader = plugin
+	plugin.PluginOverrides = plugin
 	return plugin
 }
