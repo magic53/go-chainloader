@@ -138,14 +138,15 @@ func (bp *Plugin) ImportTransactions(transactions []*wire.MsgTx) ([]*data.Tx, er
 }
 
 // NewPlugin returns new BLOCK plugin instance.
-func NewPlugin(cfg *chaincfg.Params, blocksDir string, tokenCfg *data.TokenConfig) *Plugin {
+func NewPlugin(cfg *chaincfg.Params, tokenCfg data.TokenConfig) *Plugin {
+	tcfg := &tokenCfg
 	plugin := &Plugin{
 		cfg:       cfg,
-		blocksDir: blocksDir,
+		blocksDir: tcfg.BlocksDir,
 		isReady:   false,
 		txCache:   make(map[string]map[string]*data.Tx),
 		txIndex:   make(map[wire.OutPoint]*data.BlockTx),
-		tokenCfg:  tokenCfg,
+		tokenCfg:  tcfg,
 	}
 	return plugin
 }

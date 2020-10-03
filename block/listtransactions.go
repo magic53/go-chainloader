@@ -13,5 +13,11 @@ func (bp *Plugin) ListTransactions(fromTime, toTime int64, addresses []string) (
 // WriteListTransactions writes transactions to disk at the specified location.
 // Uses the format [txDir]/listtransactions/BLOCK/BoWcezbZ9vFTwArtVTHJHp51zQZSGdcLXt/2020-06.json
 func (bp *Plugin) WriteListTransactions(fromMonth time.Time, toMonth time.Time, txDir string) error {
-	return data.PluginWriteListTransactions(bp, fromMonth, toMonth, txDir)
+	return data.PluginWriteListTransactions(bp, fromMonth, toMonth, "", txDir)
+}
+
+// WriteListTransactionsForAddress writes transactions to disk at the specified location.
+// Uses the format [txDir]/listtransactions/BLOCK/BoWcezbZ9vFTwArtVTHJHp51zQZSGdcLXt/2020-06.json
+func (bp *Plugin) WriteListTransactionsForAddress(address string, fromMonth time.Time, toMonth time.Time, txDir string) error {
+	return data.PluginWriteListTransactions(bp, fromMonth, toMonth, address, txDir)
 }

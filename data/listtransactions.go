@@ -17,6 +17,7 @@ import (
 type ListTransactionsPlugin interface {
 	ListTransactions(fromTime, toTime int64, addresses []string) ([]*Tx, error)
 	WriteListTransactions(fromMonth time.Time, toMonth time.Time, txDir string) error
+	WriteListTransactionsForAddress(address string, fromMonth time.Time, toMonth time.Time, txDir string) error
 }
 
 type writeListTxAddr struct {
@@ -58,7 +59,7 @@ func PluginListTransactions(bp Plugin, fromTime, toTime int64, addresses []strin
 // PluginWriteListTransactions writes the listtransactions data to disk. This data is organized on disk by
 // address and then month. The json file in this directory contains transaction output that is sorted
 // ascending by time.
-func PluginWriteListTransactions(bp Plugin, fromMonth time.Time, toMonth time.Time, txDir string) error {
+func PluginWriteListTransactions(bp Plugin, fromMonth time.Time, toMonth time.Time, address, txDir string) error {
 	if exists, err := FileExists(txDir); !exists || err != nil {
 		if err != nil {
 			return errors.New(fmt.Sprintf("failed to write transactions to disk: %s", err.Error()))
@@ -70,12 +71,20 @@ func PluginWriteListTransactions(bp Plugin, fromMonth time.Time, toMonth time.Ti
 	// Read txs from cache, use provided read lock
 	var txs []*writeListTxAddr
 	bp.Mu().RLock()
-	for address, txmap := range bp.TxCache() {
+	if address == "" {
+		for address2, txmap := range bp.TxCache() {
+			txs = append(txs, &writeListTxAddr{Address: address2, TxMap: txmap})
+		}
+	} else if txmap, ok := bp.TxCache()[address]; ok {
 		txs = append(txs, &writeListTxAddr{Address: address, TxMap: txmap})
 	}
 	bp.Mu().RUnlock()
 
 	txsLen := len(txs)
+	if txsLen < 1 {
+		return nil // nothing to process
+	}
+
 	shards, rng, remainder := ShardsData(runtime.NumCPU()*4, txsLen)
 
 	var mu2 sync.Mutex
@@ -90,12 +99,11 @@ func PluginWriteListTransactions(bp Plugin, fromMonth time.Time, toMonth time.Ti
 			fileDatas := make([]*monthTxs, end-start)
 			for j := start; j < end; j++ {
 				txData := txs[j]
-				address := txData.Address
 				txsMonths, err := listTxToJSON(txData.TxMap, fromMonth, toMonth, bp.TokenConf().TxLimitPerMonth)
 				if err != nil {
 					continue
 				}
-				mt := &monthTxs{Address: address, Months: txsMonths}
+				mt := &monthTxs{Address: txData.Address, Months: txsMonths}
 				fileDatas[j-start] = mt
 			}
 			if len(fileDatas) > 0 { // Write all files to disk
@@ -106,7 +114,7 @@ func PluginWriteListTransactions(bp Plugin, fromMonth time.Time, toMonth time.Ti
 							continue
 						}
 						file := fmt.Sprintf("%s.json", month.MonthDate.Format("2006-01"))
-						_ = writeListTransactionsForAddress(bp.Ticker(), monthData.Address, file, month.TxsJson, txDir)
+						_ = writeListTransactionsFileAddress(bp.Ticker(), monthData.Address, file, month.TxsJson, txDir)
 					}
 				}
 				mu2.Unlock()
@@ -119,8 +127,8 @@ func PluginWriteListTransactions(bp Plugin, fromMonth time.Time, toMonth time.Ti
 	return nil
 }
 
-// writeListTransactionsForAddress writes the transaction data to disk for the specified address.
-func writeListTransactionsForAddress(ticker string, address string, fileName string, jsonBytes []byte, txDir string) (err error) {
+// writeListTransactionsFileAddress writes the transaction data to disk for the specified address.
+func writeListTransactionsFileAddress(ticker string, address string, fileName string, jsonBytes []byte, txDir string) (err error) {
 	path := ListTransactionsFile(ticker, address, fileName, txDir)
 	var exists bool
 	if exists, err = FileExists(path); err != nil {

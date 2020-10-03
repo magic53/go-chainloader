@@ -4,8 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -39,6 +37,15 @@ type Block interface {
 	Height() int64
 	setHash(hash chainhash.Hash)
 }
+type ConfigPlugin interface {
+	Config() chaincfg.Params
+}
+type TokenPlugin interface {
+	TokenConf() TokenConfig
+}
+type ReadTransactionPlugin interface {
+	ReadTransaction(buf io.ReadSeeker) (*wire.MsgTx, error)
+}
 
 type Plugin interface {
 	Mu() *sync.RWMutex
@@ -47,15 +54,15 @@ type Plugin interface {
 	Ready() bool
 	SetReady()
 	Network() wire.BitcoinNet
-	Config() chaincfg.Params
-	TokenConf() TokenConfig
+	ConfigPlugin
+	TokenPlugin
 	TxIndex() map[wire.OutPoint]*BlockTx
 	TxCache() map[string]map[string]*Tx
 	SegwitActivated() int64
 	LoadBlocks(blocksDir string) error
 	ReadBlock(buf io.ReadSeeker) (*wire.MsgBlock, error)
 	ReadBlockHeader(buf io.ReadSeeker) (*wire.BlockHeader, error)
-	ReadTransaction(buf io.ReadSeeker) (*wire.MsgTx, error)
+	ReadTransactionPlugin
 	ReadBlocks(sc *bufio.Reader) ([]*ChainBlock, error)
 	ProcessBlocks(sc *bufio.Reader) ([]*Tx, error)
 	ProcessTxShard(blocks []*ChainBlock, start, end int, wg *sync.WaitGroup) []*Tx
@@ -607,103 +614,26 @@ type RPCResult struct {
 	Error interface{} `json:"error,omitempty"`
 	Id    string      `json:"id,omitempty"`
 }
-type rawMempool struct {
-	RPCResult
-	Transactions []string `json:"result"`
-}
-type rawTransaction struct {
-	RPCResult
-	Transaction string `json:"result"`
-}
-
-// RPCRawMempool calls getrawtransaction on each tx on the specified rpc endpoint.
-func RPCGetRawTransactions(plugin Plugin, txids []string, tokencfg *TokenConfig) ([]*wire.MsgTx, error) {
-	if len(txids) == 0 { // no work required
-		return nil, nil
-	}
-
-	queue := make(chan int, 20) // max requests at a time
-	done := make(chan *string)  // done notification queue, informs blocking queue when to proceed
-	for i, txid := range txids {
-		params := make([]interface{}, 0)
-		params = append(params, txid)
-		go func(i int) {
-			queue <- i // block when queue is full
-			b, err := RPCRequest("getrawtransaction", tokencfg, params)
-			if err != nil {
-				log.Println("failed to make getrawmempool client request")
-				done <- nil
-				return
-			}
-			var res rawTransaction
-			if err := json.Unmarshal(b, &res); err != nil {
-				log.Println("failed to parse getrawmempool client request")
-				done <- nil
-				return
-			}
-			done <- &res.Transaction
-		}(i)
-	}
-	count := len(txids)
-	var rawtxs []string
-
-out:
-	for {
-		select {
-		case tx := <-done:
-			if tx != nil {
-				rawtxs = append(rawtxs, *tx)
-			}
-			<-queue // free up item in queue
-			count--
-			if count <= 0 {
-				break out
-			}
-		}
-	}
-
-	// Deserialize raw txs
-	var txs []*wire.MsgTx
-	for _, rawtx := range rawtxs {
-		b, err := hex.DecodeString(rawtx)
-		if err != nil {
-			continue
-		}
-		r := bytes.NewReader(b)
-		if tx, err := plugin.ReadTransaction(r); err != nil {
-			continue
-		} else {
-			txs = append(txs, tx)
-		}
-	}
-
-	return txs, nil
-}
-
-// RPCRawMempool calls getrawmempool on the specified rpc endpoint.
-func RPCRawMempool(tokencfg *TokenConfig) ([]string, error) {
-	b, err := RPCRequest("getrawmempool", tokencfg, nil)
-	if err != nil {
-		return nil, errors.New("failed to make getrawmempool client request")
-	}
-	var mempool rawMempool
-	if err := json.Unmarshal(b, &mempool); err != nil {
-		return nil, err
-	}
-	return mempool.Transactions, nil
-}
 
 // RPCRequest performs suitable rpc client request with basic auth and timeout.
-func RPCRequest(method string, tokencfg *TokenConfig, params []interface{}) ([]byte, error) {
+func RPCRequest(method string, tokencfg TokenConfig, params []interface{}) ([]byte, error) {
 	paramList := ""
-	for _, val := range params {
+	for i, val := range params {
+		prefix := ""
+		comma := ""
+		if i > 0 {
+			prefix = " "
+		}
+		if i < len(params)-1 {
+			comma = ","
+		}
 		switch v := val.(type) {
 		case int:
-			paramList += fmt.Sprintf("%v", v)
+			paramList += fmt.Sprintf("%s%v%s", prefix, v, comma)
 		case []string:
-			paramList += fmt.Sprintf("%s", strings.Join(v, ","))
+			paramList += fmt.Sprintf("%s%s%s", prefix, strings.Join(v, ","), comma)
 		default:
-			paramList += fmt.Sprintf("\"%s\"", v)
+			paramList += fmt.Sprintf("%s\"%s\"%s", prefix, v, comma)
 		}
 	}
 	vars := []byte(fmt.Sprintf(`{"jsonrpc":"1.0", "id":"go-exrplugins", "method":"%s", "params":[%s]}`, method, paramList))
