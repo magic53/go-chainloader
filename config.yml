@@ -3,26 +3,29 @@ blockchain:
     ticker: BLOCK
     rpchost: localhost
     rpcport: 41414
-    rpcuser: test
-    rpcpass: testAbc
+    rpcuser: user
+    rpcpass: pass
     segwitactivated: 1584537260
-    blocksdir: "/opt/blockchain/block/data-bmainnet-goleveldb/blocks"
+    blocksdir: "/opt/blockchain/block/blocks"
     txlimit: 1000
+    listtransactionsdir: "/opt/blockchain/listtransactions"
   ltc:
     ticker: LTC
     rpchost: localhost
     rpcport: 9332
-    rpcuser: test
-    rpcpass: testAbc
+    rpcuser: user
+    rpcpass: pass
     segwitactivated: 1494432226
-    blocksdir: "/opt/blockchain/ltc/litecoin0/data/blocks"
+    blocksdir: "/opt/blockchain/ltc/blocks"
     txlimit: 100
+    listtransactionsdir: "/opt/blockchain/listtransactions"
   btc:
     ticker: BTC
     rpchost: localhost
     rpcport: 8332
-    rpcuser: test
-    rpcpass: testAbc
+    rpcuser: user
+    rpcpass: pass
     segwitactivated: 1503539857
-    blocksdir: "/opt/blockchain/btc/bitcoin0/data/blocks"
+    blocksdir: "/opt/blockchain/btc/blocks"
     txlimit: 100
+    listtransactionsdir: "/opt/blockchain/listtransactions"
