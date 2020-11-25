@@ -1,7 +1,10 @@
+// Copyright (c) 2020 Michael Madgett
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
 package btc
 
 import (
-	"github.com/blocknetdx/go-exrplugins/data"
+	"github.com/magic53/go-chainloader/data"
 )
 
 // GetRawMempool calls getrawmempool on the specified rpc endpoint.

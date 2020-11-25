@@ -1,11 +1,14 @@
+// Copyright (c) 2020 Michael Madgett
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
 package main
 
 import (
 	"fmt"
-	"github.com/blocknetdx/go-exrplugins/block"
-	"github.com/blocknetdx/go-exrplugins/btc"
-	"github.com/blocknetdx/go-exrplugins/data"
-	"github.com/blocknetdx/go-exrplugins/ltc"
+	"github.com/magic53/go-chainloader/block"
+	"github.com/magic53/go-chainloader/btc"
+	"github.com/magic53/go-chainloader/data"
+	"github.com/magic53/go-chainloader/ltc"
 	"log"
 	"os"
 	"os/signal"
@@ -107,7 +110,7 @@ func main() {
 		}
 	}
 
-	go watchMempools(plugins)
+	go watchMempools(plugins, false)
 
 out:
 	for {
@@ -123,7 +126,7 @@ out:
 
 // watchMempools watches the mempool on a timer and saves new transaction data
 // to disk.
-func watchMempools(plugins []interface{}) {
+func watchMempools(plugins []interface{}, writeFiles bool) {
 	var counter uint64
 	for {
 		if data.IsShuttingDown() {
@@ -169,8 +172,12 @@ func watchMempools(plugins []interface{}) {
 						log.Printf("failed to import transactions for %s", dataPlugin.Ticker())
 						return
 					}
+					if !writeFiles {
+						return
+					}
+					now := time.Now()
 					fromMonth := time.Date(2020, 8, 1, 0, 0, 0, 0, time.UTC)
-					toMonth := time.Date(2020, 10, 1, 0, 0, 0, 0, time.UTC)
+					toMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 					for _, tx := range txs {
 						_ = listTxPlugin.WriteListTransactionsForAddress(tx.Address, fromMonth, toMonth, dataPlugin.TokenConf().ListTransactionsDir)
 					}
@@ -182,6 +189,15 @@ func watchMempools(plugins []interface{}) {
 		counter += 250
 	}
 }
+
+// TODO Handle lookup requests
+//func startServer() *http.Server {
+//	handler := func(w http.ResponseWriter, req *http.Request) {
+//		_, _ = io.WriteString(w, "Hello, world!\n")
+//	}
+//	server := &http.Server{Addr: ":8080", Handler: handler}
+//	return server
+//}
 
 func debugBLOCK(blockPlugin *block.Plugin, config *data.TokenConfig) {
 	var err error

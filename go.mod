@@ -1,4 +1,4 @@
-module github.com/blocknetdx/go-exrplugins
+module github.com/magic53/go-chainloader
 
 go 1.14
 

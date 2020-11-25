@@ -1,3 +1,6 @@
+// Copyright (c) 2020 Michael Madgett
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
 package data
 
 import (
@@ -636,7 +639,7 @@ func RPCRequest(method string, tokencfg TokenConfig, params []interface{}) ([]by
 			paramList += fmt.Sprintf("%s\"%s\"%s", prefix, v, comma)
 		}
 	}
-	vars := []byte(fmt.Sprintf(`{"jsonrpc":"1.0", "id":"go-exrplugins", "method":"%s", "params":[%s]}`, method, paramList))
+	vars := []byte(fmt.Sprintf(`{"jsonrpc":"1.0", "id":"go-chainloader", "method":"%s", "params":[%s]}`, method, paramList))
 	r := bytes.NewReader(vars)
 	client := &http.Client{
 		Timeout: 10 * time.Second,
