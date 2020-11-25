@@ -67,7 +67,10 @@ func PluginWriteListTransactions(bp Plugin, fromMonth time.Time, toMonth time.Ti
 		if err != nil {
 			return errors.New(fmt.Sprintf("failed to write transactions to disk: %s", err.Error()))
 		} else {
-			return errors.New(fmt.Sprintf("failed to write transactions to disk, path does not exist: %s", txDir))
+			// Create path if it doesn't already exist
+			if err := os.MkdirAll(txDir, 0775); err != nil {
+				return errors.New(fmt.Sprintf("failed to write transactions to disk, path does not exist: %s", txDir))
+			}
 		}
 	}
 
