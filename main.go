@@ -68,6 +68,10 @@ func main() {
 		}
 	}()
 
+	// Default tx cache date (last 2 months)
+	toMonth := time.Now()
+	fromMonth := toMonth.AddDate(0, -2, 0)
+
 	dir, err := filepath.Abs(filepath.Dir(os.Args[0]))
 	if err != nil {
 		log.Fatal(err)
@@ -88,7 +92,11 @@ func main() {
 				return
 			}
 			plugins = append(plugins, plugin)
-			//debugBLOCK(plugin, &config)
+			go func() {
+				if err = plugin.WriteListTransactions(fromMonth, toMonth, plugin.TokenConf().OutputDir); err != nil {
+					fmt.Println("error", err.Error())
+				}
+			}()
 		case "LTC":
 			// load ltc config
 			plugin := ltc.NewPlugin(&ltc.MainNetParams, config)
@@ -97,7 +105,11 @@ func main() {
 				return
 			}
 			plugins = append(plugins, plugin)
-			//debugLTC(plugin, &config)
+			go func() {
+				if err = plugin.WriteListTransactions(fromMonth, toMonth, plugin.TokenConf().OutputDir); err != nil {
+					fmt.Println("error", err.Error())
+				}
+			}()
 		case "BTC":
 			// load btc config
 			plugin := btc.NewPlugin(&btc.MainNetParams, config)
@@ -106,7 +118,11 @@ func main() {
 				return
 			}
 			plugins = append(plugins, plugin)
-			//debugBTC(plugin, &config)
+			go func() {
+				if err = plugin.WriteListTransactions(fromMonth, toMonth, plugin.TokenConf().OutputDir); err != nil {
+					fmt.Println("error", err.Error())
+				}
+			}()
 		}
 	}
 
@@ -179,7 +195,7 @@ func watchMempools(plugins []interface{}, writeFiles bool) {
 					fromMonth := time.Date(2020, 8, 1, 0, 0, 0, 0, time.UTC)
 					toMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 					for _, tx := range txs {
-						_ = listTxPlugin.WriteListTransactionsForAddress(tx.Address, fromMonth, toMonth, dataPlugin.TokenConf().ListTransactionsDir)
+						_ = listTxPlugin.WriteListTransactionsForAddress(tx.Address, fromMonth, toMonth, dataPlugin.TokenConf().OutputDir)
 					}
 				}(plugin)
 			}
@@ -243,7 +259,7 @@ func debugBLOCK(blockPlugin *block.Plugin, config *data.TokenConfig) {
 
 	fromMonth := time.Date(2020, 6, 1, 0, 0, 0, 0, time.UTC)
 	toMonth := time.Date(2020, 10, 1, 0, 0, 0, 0, time.UTC)
-	if err = blockPlugin.WriteListTransactions(fromMonth, toMonth, "/opt/blockchain/block/exrplugins/"); err != nil {
+	if err = blockPlugin.WriteListTransactions(fromMonth, toMonth, blockPlugin.TokenConf().OutputDir); err != nil {
 		fmt.Println("error", err.Error())
 	}
 }
@@ -311,7 +327,7 @@ func debugLTC(ltcPlugin *ltc.Plugin, config *data.TokenConfig) {
 
 	fromMonth := time.Date(2020, 8, 1, 0, 0, 0, 0, time.UTC)
 	toMonth := time.Date(2020, 10, 1, 0, 0, 0, 0, time.UTC)
-	if err = ltcPlugin.WriteListTransactions(fromMonth, toMonth, "/opt/blockchain/block/exrplugins/"); err != nil {
+	if err = ltcPlugin.WriteListTransactions(fromMonth, toMonth, ltcPlugin.TokenConf().OutputDir); err != nil {
 		fmt.Println("error", err.Error())
 	}
 }
@@ -346,7 +362,7 @@ func debugBTC(btcPlugin *btc.Plugin, config *data.TokenConfig) {
 
 	fromMonth := time.Date(2020, 8, 1, 0, 0, 0, 0, time.UTC)
 	toMonth := time.Date(2020, 10, 1, 0, 0, 0, 0, time.UTC)
-	if err = btcPlugin.WriteListTransactions(fromMonth, toMonth, "/opt/blockchain/block/exrplugins/"); err != nil {
+	if err = btcPlugin.WriteListTransactions(fromMonth, toMonth, btcPlugin.TokenConf().OutputDir); err != nil {
 		fmt.Println("error", err.Error())
 	}
 }

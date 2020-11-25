@@ -20,7 +20,7 @@ func TestConfig(t *testing.T) {
 		"\n    segwitactivated: 12345" +
 		"\n    blocksdir: /opt/blockchain/block" +
 		"\n    txlimit: 1000" +
-		"\n    listtransactionsdir: /opt/blockchain/block/listtransactions" +
+		"\n    outputdir: /opt/blockchain/block/listtransactions" +
 		"\n  btc:" +
 		"\n    ticker: BTC" +
 		"\n    rpchost: localhost" +
@@ -30,7 +30,7 @@ func TestConfig(t *testing.T) {
 		"\n    segwitactivated: 123456" +
 		"\n    blocksdir: /opt/blockchain/btc" +
 		"\n    txlimit: 100" +
-		"\n    listtransactionsdir: /opt/blockchain/btc/listtransactions" +
+		"\n    outputdir: /opt/blockchain/btc/listtransactions" +
 		"\n")
 	var config Config
 	if err := yaml.Unmarshal(yml, &config); err != nil {
@@ -60,7 +60,7 @@ func TestConfig(t *testing.T) {
 	if config.Blockchain["block"].TxLimitPerMonth != 1000 {
 		t.Error("expecting 1000")
 	}
-	if config.Blockchain["block"].ListTransactionsDir != "/opt/blockchain/block/listtransactions" {
+	if config.Blockchain["block"].OutputDir != "/opt/blockchain/block/listtransactions" {
 		t.Error("expecting /opt/blockchain/block/listtransactions")
 	}
 	if config.Blockchain["block"].RPCHttp() != "http://localhost:41414/" {
@@ -90,7 +90,7 @@ func TestConfig(t *testing.T) {
 	if config.Blockchain["btc"].TxLimitPerMonth != 100 {
 		t.Error("expecting 100")
 	}
-	if config.Blockchain["btc"].ListTransactionsDir != "/opt/blockchain/btc/listtransactions" {
+	if config.Blockchain["btc"].OutputDir != "/opt/blockchain/btc/listtransactions" {
 		t.Error("expecting /opt/blockchain/btc/listtransactions")
 	}
 	if config.Blockchain["btc"].RPCHttp() != "http://localhost:8332/" {

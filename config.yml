@@ -8,7 +8,7 @@ blockchain:
     segwitactivated: 1584537260
     blocksdir: "/opt/blockchain/block/blocks"
     txlimit: 1000
-    listtransactionsdir: "/opt/blockchain/listtransactions"
+    outputdir: "/opt/blockchain/go-chainloader-data"
   ltc:
     ticker: LTC
     rpchost: localhost
@@ -18,7 +18,7 @@ blockchain:
     segwitactivated: 1494432226
     blocksdir: "/opt/blockchain/ltc/blocks"
     txlimit: 100
-    listtransactionsdir: "/opt/blockchain/listtransactions"
+    outputdir: "/opt/blockchain/go-chainloader-data"
   btc:
     ticker: BTC
     rpchost: localhost
@@ -28,4 +28,4 @@ blockchain:
     segwitactivated: 1503539857
     blocksdir: "/opt/blockchain/btc/blocks"
     txlimit: 100
-    listtransactionsdir: "/opt/blockchain/listtransactions"
+    outputdir: "/opt/blockchain/go-chainloader-data"

@@ -11,15 +11,15 @@ type Config struct {
 }
 
 type TokenConfig struct {
-	Ticker              string `yaml:"ticker"`
-	RPCHost             string `yaml:"rpchost"`
-	RPCPort             int    `yaml:"rpcport"`
-	RPCUser             string `yaml:"rpcuser"`
-	RPCPass             string `yaml:"rpcpass"`
-	SegwitActivated     int64  `yaml:"segwitactivated"`
-	BlocksDir           string `yaml:"blocksdir"`
-	TxLimitPerMonth     int    `yaml:"txlimit"`
-	ListTransactionsDir string `yaml:"listtransactionsdir"`
+	Ticker          string `yaml:"ticker"`
+	RPCHost         string `yaml:"rpchost"`
+	RPCPort         int    `yaml:"rpcport"`
+	RPCUser         string `yaml:"rpcuser"`
+	RPCPass         string `yaml:"rpcpass"`
+	SegwitActivated int64  `yaml:"segwitactivated"`
+	BlocksDir       string `yaml:"blocksdir"`
+	TxLimitPerMonth int    `yaml:"txlimit"`
+	OutputDir       string `yaml:"outputdir"`
 }
 
 func (t TokenConfig) RPCHttp() string {
